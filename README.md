@@ -62,4 +62,9 @@ De frontend is al ingesteld om lokaal naar `http://127.0.0.1:8000` te praten.
 ### Frontend op GitHub Pages
 
 De workflow staat in `.github/workflows/deploy.yml`.
-Pas voor productie in `frontend/lib/api_client.dart` de waarde van `kBackendUrl` aan naar je Render-URL.
+Voor productie hoef je `frontend/lib/api_client.dart` niet handmatig te wijzigen.
+Zet in GitHub onder `Settings > Secrets and variables > Actions > Variables` een repository variable:
+
+- `BACKEND_URL` = je publieke backend-URL
+
+Daarna bouwt de workflow de frontend automatisch met die backend-URL.

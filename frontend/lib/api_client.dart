@@ -5,8 +5,12 @@ import 'package:http/http.dart' as http;
 import 'models/signal.dart';
 import 'models/trade.dart';
 
-// ── Pas deze twee constanten aan na deployment ──────────────────────────────
-const String kBackendUrl = 'http://127.0.0.1:8000';
+// ── Lokale fallback voor development, overschrijf in productie via
+// flutter build --dart-define=BACKEND_URL=https://jouw-backend-url
+const String kBackendUrl = String.fromEnvironment(
+  'BACKEND_URL',
+  defaultValue: 'http://127.0.0.1:8000',
+);
 // Voor lokale testing kun je tijdelijk hier de token invullen nadat je /login
 // hebt aangeroepen. In productie: bewaar tokens in veilige opslag.
 String? _token;
