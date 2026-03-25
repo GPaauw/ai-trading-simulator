@@ -9,6 +9,8 @@ services:
     startCommand: uvicorn main:app --host 0.0.0.0 --port 8000
     envVars:
       - key: APP_USERNAME
-        value: admin
+        # Stel deze in via de Render dashboard of secret management
+        value: ""
       - key: APP_PASSWORD
-        value: trading123
+        # Stel deze in via de Render dashboard of secret management
+        value: ""

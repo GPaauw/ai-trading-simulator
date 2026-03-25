@@ -4,9 +4,10 @@ from typing import Optional
 
 from . import session
 
-# Inloggegevens (houd deze buiten git in productie door env vars te gebruiken)
-USERNAME = os.getenv("APP_USERNAME", "admin")
-PASSWORD = os.getenv("APP_PASSWORD", "trading123")
+# Inloggegevens: vereis dat deze via omgevingsvariabelen worden gezet.
+# Verwijder harde waarden uit de broncode voordat je de repo publiek maakt.
+USERNAME = os.getenv("APP_USERNAME")
+PASSWORD = os.getenv("APP_PASSWORD")
 
 
 async def verify_token(authorization: Optional[str] = Header(None, alias="Authorization")) -> None:
@@ -19,4 +20,7 @@ async def verify_token(authorization: Optional[str] = Header(None, alias="Author
 
 
 def validate_credentials(username: str, password: str) -> bool:
+    if not USERNAME or not PASSWORD:
+        # Credentials niet geconfigureerd — geen enkele login is toegestaan.
+        return False
     return username == USERNAME and password == PASSWORD

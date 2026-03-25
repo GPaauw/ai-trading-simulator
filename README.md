@@ -6,14 +6,13 @@ Eenvoudige trading-simulator met:
 - login met gebruikersnaam en wachtwoord
 - dummy signals, trades, history en learning
 
-## Standaard login
+## Login (development en productie)
 
-- Gebruikersnaam: `admin`
-- Wachtwoord: `trading123`
-
-Je kunt deze later aanpassen via environment variables:
+De app gebruikt gebruikersnaam/wachtwoord die via omgevingsvariabelen worden gezet:
 - `APP_USERNAME`
 - `APP_PASSWORD`
+
+Voor lokale ontwikkeling kun je tijdelijk waarden instellen in je shell, maar zet nooit echte wachtwoorden in de repository.
 
 ## Lokaal starten
 
@@ -42,7 +41,7 @@ De frontend is al ingesteld om lokaal naar `http://127.0.0.1:8000` te praten.
 ## Gebruiken
 
 1. Open de app in de browser.
-2. Log in met `admin` / `trading123`.
+2. Log in met de gebruikersnaam en het wachtwoord die je als env-vars hebt ingesteld.
 3. Bekijk de signalen op het dashboard.
 4. Klik op `Execute` om een dummy trade uit te voeren.
 5. Klik op `Leer van Trades` om de learning-agent bij te werken.
