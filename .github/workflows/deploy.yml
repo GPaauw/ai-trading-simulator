@@ -31,7 +31,7 @@ jobs:
         run: |
           BACKEND_URL="${{ vars.BACKEND_URL }}"
           if [ -z "$BACKEND_URL" ]; then
-            BACKEND_URL="http://127.0.0.1:8000"
+            BACKEND_URL="https://green-crews-bake.loca.lt"
           fi
           flutter build web \
             --release \

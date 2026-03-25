@@ -9,7 +9,7 @@ import 'models/trade.dart';
 // flutter build --dart-define=BACKEND_URL=https://jouw-backend-url
 const String kBackendUrl = String.fromEnvironment(
   'BACKEND_URL',
-  defaultValue: 'http://127.0.0.1:8000',
+  defaultValue: 'https://green-crews-bake.loca.lt',
 );
 // Voor lokale testing kun je tijdelijk hier de token invullen nadat je /login
 // hebt aangeroepen. In productie: bewaar tokens in veilige opslag.
