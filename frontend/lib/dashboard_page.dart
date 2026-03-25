@@ -214,6 +214,7 @@ class _DashboardPageState extends State<DashboardPage> {
   Widget _buildSignalTile(Signal signal) {
     final isBuy = signal.action == 'buy';
     final color = isBuy ? Colors.green : Colors.red;
+    final loggedIn = ApiClient.isLoggedIn();
     return ListTile(
       leading: CircleAvatar(
         backgroundColor: color,
@@ -230,11 +231,19 @@ class _DashboardPageState extends State<DashboardPage> {
         '${signal.action.toUpperCase()}  |  '
         'Zekerheid: ${(signal.confidence * 100).toStringAsFixed(0)}%',
       ),
-      trailing: FilledButton(
-        style: FilledButton.styleFrom(backgroundColor: color),
-        onPressed: () => _executeTrade(signal),
-        child: const Text('Execute'),
-      ),
+      trailing: loggedIn
+          ? FilledButton(
+              style: FilledButton.styleFrom(backgroundColor: color),
+              onPressed: () => _executeTrade(signal),
+              child: const Text('Execute'),
+            )
+          : OutlinedButton(
+              onPressed: () => Navigator.pushReplacement(
+                context,
+                MaterialPageRoute(builder: (_) => const LoginPage()),
+              ),
+              child: const Text('Login om uit te voeren'),
+            ),
     );
   }
 
@@ -250,23 +259,31 @@ class _DashboardPageState extends State<DashboardPage> {
             Text('AI Leermodule', style: Theme.of(context).textTheme.titleLarge),
             const Divider(),
             const SizedBox(height: 8),
-            SizedBox(
-              width: double.infinity,
-              child: FilledButton.icon(
-                icon: _loadingLearn
-                    ? const SizedBox(
-                        width: 18,
-                        height: 18,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 2,
-                          color: Colors.white,
-                        ),
-                      )
-                    : const Icon(Icons.psychology),
-                label: const Text('Leer van Trades'),
-                onPressed: _loadingLearn ? null : _learn,
-              ),
-            ),
+            Builder(builder: (_) {
+              if (!ApiClient.isLoggedIn()) {
+                return Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 8),
+                  child: Text('Log in om de leermodule te gebruiken.'),
+                );
+              }
+              return SizedBox(
+                width: double.infinity,
+                child: FilledButton.icon(
+                  icon: _loadingLearn
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: Colors.white,
+                          ),
+                        )
+                      : const Icon(Icons.psychology),
+                  label: const Text('Leer van Trades'),
+                  onPressed: _loadingLearn ? null : _learn,
+                ),
+              );
+            }),
             if (_learnResult != null) ...[
               const SizedBox(height: 16),
               Container(
@@ -342,6 +359,11 @@ class _DashboardPageState extends State<DashboardPage> {
                   padding: EdgeInsets.all(24),
                   child: CircularProgressIndicator(),
                 ),
+              )
+            else if (!ApiClient.isLoggedIn())
+              const Padding(
+                padding: EdgeInsets.all(12),
+                child: Text('Log in om trade geschiedenis te bekijken.'),
               )
             else if (_history.isEmpty)
               const Padding(

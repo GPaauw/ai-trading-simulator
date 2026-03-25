@@ -29,6 +29,8 @@ class ApiClient {
 
   static void clearToken() => _token = null;
 
+  static bool isLoggedIn() => _token != null;
+
   static Future<List<Signal>> getSignals() async {
     final response = await http.get(Uri.parse('$kBackendUrl/signals'), headers: _headers());
     if (response.statusCode != 200) {

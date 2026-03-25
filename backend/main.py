@@ -37,8 +37,11 @@ def health() -> Dict[str, str]:
     return {"status": "ok"}
 
 
-@app.get("/signals", dependencies=[Depends(verify_token)], response_model=List[Signal])
+@app.get("/signals", response_model=List[Signal])
 def get_signals() -> List[Signal]:
+    """Publiek endpoint: iedereen kan huidige dummy-signalen ophalen.
+    Trades, history en learn blijven beveiligd.
+    """
     return data_service.get_signals()
 
 
