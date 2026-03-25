@@ -1,0 +1,14 @@
+# render.yaml — bewaar dit bestand in de ROOT van je repository.
+# Render detecteert het automatisch bij het aanmaken van een nieuwe Web Service.
+services:
+  - type: web
+    name: ai-trading-simulator-backend
+    runtime: python
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port 8000
+    envVars:
+      - key: APP_USERNAME
+        value: admin
+      - key: APP_PASSWORD
+        value: trading123

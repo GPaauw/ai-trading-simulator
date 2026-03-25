@@ -1,0 +1,39 @@
+name: Deploy Frontend naar GitHub Pages
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Flutter installeren
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Dependencies installeren
+        working-directory: frontend
+        run: flutter pub get
+
+      - name: Flutter Web bouwen
+        working-directory: frontend
+        # Vervang /ai-trading-simulator/ door de naam van jouw GitHub repository
+        run: flutter build web --release --base-href /ai-trading-simulator/
+
+      - name: Deployen naar GitHub Pages
+        uses: peaceiris/actions-gh-pages@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: frontend/build/web
+          publish_branch: gh-pages
