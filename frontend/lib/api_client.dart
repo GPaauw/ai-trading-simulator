@@ -9,7 +9,7 @@ import 'models/trade.dart';
 // flutter build --dart-define=BACKEND_URL=https://jouw-backend-url
 const String kBackendUrl = String.fromEnvironment(
   'BACKEND_URL',
-  defaultValue: 'https://green-crews-bake.loca.lt',
+  defaultValue: 'https://ai-trading-simulator.onrender.com',
 );
 // Voor lokale testing kun je tijdelijk hier de token invullen nadat je /login
 // hebt aangeroepen. In productie: bewaar tokens in veilige opslag.
