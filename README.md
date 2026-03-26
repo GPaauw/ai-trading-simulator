@@ -95,5 +95,6 @@ Auth vereist:
 
 ### Frontend op GitHub Pages
 
-Gebruik `.github/workflows/deploy.yml` en zet repository variable:
-- `BACKEND_URL` = publieke backend-URL
+Gebruik [.github/workflows/deploy_frontend_pages.yml](.github/workflows/deploy_frontend_pages.yml) en zet GitHub Pages op bron `gh-pages` / root.
+
+Als de frontend met een publieke backend moet praten, zet dan in de frontend-config de juiste backend-URL of voeg die later als build-time configuratie toe.
