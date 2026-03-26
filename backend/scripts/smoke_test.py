@@ -63,6 +63,7 @@ def main() -> None:
     holdings = holdings_resp.json()
     assert holdings, "Geen holdings gevonden na buy"
     assert holdings[0]["recommendation"] in {"hold", "sell_now", "take_partial_profit"}
+    rounded_quantity = holdings[0]["quantity"]
 
     reloaded_service = DataService()
     persisted_holdings = reloaded_service.get_holdings()
@@ -75,6 +76,7 @@ def main() -> None:
             "symbol": candidate["symbol"],
             "action": "sell",
             "amount": 0,
+            "quantity": rounded_quantity,
             "market": candidate["market"],
             "price": candidate["price"],
         },

@@ -7,6 +7,9 @@ from models.holding import HoldingView
 from models.trade import TradeResult
 
 
+SELL_QUANTITY_EPSILON = 1e-6
+
+
 class DataService:
     def __init__(self) -> None:
         default_path = os.path.join(
@@ -200,7 +203,10 @@ class DataService:
                 raise ValueError(f"Geen positie gevonden voor {normalized_symbol}")
 
             current_quantity = float(holding["quantity"])
-            if quantity <= 0 or quantity > current_quantity:
+            if abs(quantity - current_quantity) <= SELL_QUANTITY_EPSILON:
+                quantity = current_quantity
+
+            if quantity <= 0 or quantity - current_quantity > SELL_QUANTITY_EPSILON:
                 raise ValueError("Ongeldige verkoophoeveelheid")
 
             avg_entry_price = float(holding["avg_entry_price"])
@@ -209,7 +215,7 @@ class DataService:
             realized_profit_loss = proceeds - cost_basis
             remaining_quantity = current_quantity - quantity
 
-            if remaining_quantity <= 1e-8:
+            if remaining_quantity <= SELL_QUANTITY_EPSILON:
                 conn.execute("DELETE FROM holdings WHERE symbol = ?", (normalized_symbol,))
                 conn.execute("DELETE FROM holding_alert_states WHERE symbol = ?", (normalized_symbol,))
                 status = "executed: positie gesloten"
