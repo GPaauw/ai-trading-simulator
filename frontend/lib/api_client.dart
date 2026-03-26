@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:http/http.dart' as http;
 
+import 'models/holding.dart';
 import 'models/signal.dart';
 import 'models/trade.dart';
 
@@ -45,10 +46,13 @@ class ApiClient {
   static Future<Trade> executeTrade(
     String symbol,
     String action,
-    double amount,
-    double expectedReturnPct,
-    double riskPct,
-  ) async {
+    double amount, {
+    String? market,
+    double? quantity,
+    double? price,
+    double expectedReturnPct = 0.0,
+    double riskPct = 0.0,
+  }) async {
     final response = await http.post(
       Uri.parse('$kBackendUrl/trade'),
       headers: _headers(),
@@ -56,6 +60,9 @@ class ApiClient {
         'symbol': symbol,
         'action': action,
         'amount': amount,
+        'market': market,
+        'quantity': quantity,
+        'price': price,
         'expected_return_pct': expectedReturnPct,
         'risk_pct': riskPct,
       }),
@@ -91,6 +98,17 @@ class ApiClient {
       throw Exception('Fout bij ophalen portfolio (${response.statusCode})');
     }
     return jsonDecode(response.body) as Map<String, dynamic>;
+  }
+
+  static Future<List<Holding>> getHoldings() async {
+    final response = await http.get(Uri.parse('$kBackendUrl/holdings'), headers: _headers());
+    if (response.statusCode != 200) {
+      throw Exception('Fout bij ophalen holdings (${response.statusCode})');
+    }
+    final List<dynamic> data = jsonDecode(response.body) as List<dynamic>;
+    return data
+        .map((e) => Holding.fromJson(e as Map<String, dynamic>))
+        .toList();
   }
 
   static Future<Map<String, dynamic>> sendRealtimeAlerts() async {

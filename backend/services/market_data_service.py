@@ -32,6 +32,15 @@ class MarketDataService:
     def get_watchlist(self) -> List[Dict[str, str]]:
         return self.WATCHLIST
 
+    def get_instrument(self, symbol: str, market: str | None = None) -> Dict[str, str]:
+        normalized_symbol = symbol.upper()
+        candidates = [item for item in self.WATCHLIST if item["symbol"] == normalized_symbol]
+        if market:
+            candidates = [item for item in candidates if item["market"] == market]
+        if not candidates:
+            raise ValueError(f"Instrument niet in watchlist: {symbol}")
+        return candidates[0]
+
     def get_snapshot(self, instrument: Dict[str, str]) -> Dict[str, float]:
         key = f"snapshot:{instrument['provider_symbol']}"
         cached = self._get_cache(key)

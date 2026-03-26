@@ -5,7 +5,8 @@ Deze app geeft marktadvies in plaats van random trades:
 - Flutter Web-frontend met adviesdashboard
 - Markten: US stocks, EU stocks en crypto
 - Advies per instrument: `buy/sell/hold`, risico%, verwachte winst%
-- Paper trading met startkapitaal en daglimiet
+- Registratie van echte aankopen met live holdings-overzicht
+- Verkoopsignalen op basis van actuele marktprijs, stop-loss, koersdoel en modeladvies
 - E-mailalerts (realtime + dagoverzicht)
 
 ## Data bronnen (gratis)
@@ -62,10 +63,12 @@ flutter run -d chrome
 
 1. Log in met je account.
 2. Bekijk `Marktadvies`: per asset zie je actie, risico% en verwachte winst%.
-3. Klik op `Paper trade` bij een buy/sell advies om de strategie te simuleren.
-4. Volg je resultaat in `Portfolio` en `Paper Trade Geschiedenis`.
-5. Klik op `Leer van markt + trades` om risico- en confidence-inzichten te updaten.
-6. Klik op `Stuur realtime alerts` of `Stuur dag samenvatting` voor e-mailnotificaties.
+3. Klik bij een `BUY`-advies op `Ik kocht dit` en vul in wat je echt hebt gekocht.
+4. Bekijk `Mijn posities` voor live P/L, stop-loss, koersdoel en een `SELL/HOLD` aanbeveling.
+5. Gebruik `Verkoop` bij een positie zodra je die wilt sluiten; de app rekent het resultaat uit op basis van de actuele prijs.
+6. Volg je resultaat in `Portfolio` en `Transactiegeschiedenis`.
+7. Klik op `Leer van markt + trades` om risico- en confidence-inzichten te updaten.
+8. Klik op `Stuur realtime alerts` of `Stuur dag samenvatting` voor e-mailnotificaties.
 
 ## API endpoints
 
@@ -79,6 +82,7 @@ Auth vereist:
 - `POST /login`
 - `POST /trade`
 - `GET /history`
+- `GET /holdings`
 - `GET /portfolio`
 - `POST /learn`
 - `POST /alerts/realtime`

@@ -3,6 +3,8 @@ class Trade {
   final String symbol;
   final String action;
   final double amount;
+  final double quantity;
+  final double price;
   final double profitLoss;
   final String timestamp;
   final String status;
@@ -14,6 +16,8 @@ class Trade {
     required this.symbol,
     required this.action,
     required this.amount,
+    this.quantity = 0.0,
+    this.price = 0.0,
     required this.profitLoss,
     required this.timestamp,
     required this.status,
@@ -27,6 +31,8 @@ class Trade {
       symbol: json['symbol'] as String,
       action: json['action'] as String,
       amount: (json['amount'] as num).toDouble(),
+      quantity: (json['quantity'] as num?)?.toDouble() ?? 0.0,
+      price: (json['price'] as num?)?.toDouble() ?? 0.0,
       profitLoss: (json['profit_loss'] as num).toDouble(),
       timestamp: json['timestamp'] as String,
       status: json['status'] as String,

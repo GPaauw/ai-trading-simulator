@@ -3,6 +3,7 @@ import uuid
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+from models.holding import HoldingView
 from models.signal import Signal
 from services.market_data_service import MarketDataService
 
@@ -25,6 +26,66 @@ class AdviceEngine:
                 continue
 
         return sorted(signals, key=lambda s: s.confidence, reverse=True)
+
+    def build_signal_map(self) -> dict[str, Signal]:
+        return {signal.symbol: signal for signal in self.build_signals()}
+
+    def build_holding_view(
+        self,
+        holding: dict[str, object],
+        signal: Signal | None,
+        current_price: float,
+    ) -> HoldingView:
+        quantity = float(holding["quantity"])
+        invested_amount = float(holding["invested_amount"])
+        avg_entry_price = float(holding["avg_entry_price"])
+        market_value = quantity * current_price
+        unrealized_profit_loss = market_value - invested_amount
+        unrealized_profit_loss_pct = (
+            ((current_price / avg_entry_price) - 1.0) * 100 if avg_entry_price else 0.0
+        )
+
+        risk_pct = signal.risk_pct if signal else 1.2
+        expected_return_pct = signal.expected_return_pct if signal else 2.0
+        confidence = signal.confidence if signal else 0.55
+
+        stop_loss_price = avg_entry_price * (1.0 - (risk_pct / 100.0))
+        target_price = avg_entry_price * (1.0 + (expected_return_pct / 100.0))
+
+        recommendation = "hold"
+        reason = "Positie monitoren; nog geen verkooptrigger geraakt."
+        if current_price <= stop_loss_price:
+            recommendation = "sell"
+            reason = "Stop-loss geraakt op basis van actuele marktprijs."
+        elif signal and signal.action == "sell" and signal.confidence >= 0.64:
+            recommendation = "sell"
+            reason = "Actueel model geeft een sell-signaal met voldoende zekerheid."
+        elif current_price >= target_price and (not signal or signal.action != "buy"):
+            recommendation = "sell"
+            reason = "Koersdoel bereikt en momentum neemt niet verder toe."
+        elif signal and signal.action == "buy":
+            reason = "Trend blijft positief; positie kan worden aangehouden."
+
+        return HoldingView(
+            symbol=str(holding["symbol"]),
+            market=str(holding["market"]),
+            quantity=round(quantity, 6),
+            invested_amount=round(invested_amount, 2),
+            avg_entry_price=round(avg_entry_price, 4),
+            current_price=round(current_price, 4),
+            market_value=round(market_value, 2),
+            unrealized_profit_loss=round(unrealized_profit_loss, 2),
+            unrealized_profit_loss_pct=round(unrealized_profit_loss_pct, 3),
+            recommendation=recommendation,
+            recommendation_reason=reason,
+            target_price=round(target_price, 4),
+            stop_loss_price=round(stop_loss_price, 4),
+            confidence=round(confidence, 4),
+            expected_return_pct=round(expected_return_pct, 3),
+            risk_pct=round(risk_pct, 3),
+            opened_at=str(holding["opened_at"]),
+            updated_at=str(holding["updated_at"]),
+        )
 
     def _to_signal(self, instrument: dict[str, str], price: float, closes: list[float]) -> Signal:
         sma_short = _sma(closes, 5)

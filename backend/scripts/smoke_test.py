@@ -29,14 +29,40 @@ def main() -> None:
         "/trade",
         headers=headers,
         json={
-            "symbol": non_hold["symbol"],
-            "action": non_hold["action"],
+            "symbol": signals[0]["symbol"],
+            "action": "buy",
             "amount": 200,
-            "expected_return_pct": non_hold["expected_return_pct"],
-            "risk_pct": non_hold["risk_pct"],
+            "market": signals[0]["market"],
+            "price": signals[0]["price"],
+            "expected_return_pct": signals[0]["expected_return_pct"],
+            "risk_pct": signals[0]["risk_pct"],
         },
     )
     assert trade_resp.status_code == 200, trade_resp.text
+    assert trade_resp.json()["status"].startswith("executed"), trade_resp.text
+
+    holdings_resp = client.get("/holdings", headers=headers)
+    assert holdings_resp.status_code == 200, holdings_resp.text
+    holdings = holdings_resp.json()
+    assert holdings, "Geen holdings gevonden na buy"
+
+    sell_resp = client.post(
+        "/trade",
+        headers=headers,
+        json={
+            "symbol": signals[0]["symbol"],
+            "action": "sell",
+            "amount": 0,
+            "market": signals[0]["market"],
+            "price": signals[0]["price"],
+        },
+    )
+    assert sell_resp.status_code == 200, sell_resp.text
+    assert sell_resp.json()["status"].startswith("executed"), sell_resp.text
+
+    holdings_after_sell_resp = client.get("/holdings", headers=headers)
+    assert holdings_after_sell_resp.status_code == 200, holdings_after_sell_resp.text
+    assert not holdings_after_sell_resp.json(), "Holding niet gesloten na sell"
 
     portfolio_resp = client.get("/portfolio", headers=headers)
     assert portfolio_resp.status_code == 200, portfolio_resp.text

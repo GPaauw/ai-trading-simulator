@@ -20,7 +20,10 @@ class LearningAgent:
         wins = 0
         total_pl = 0.0
         for trade in history:
-            if trade.status != "executed":
+            if not trade.status.startswith("executed"):
+                continue
+
+            if trade.action == "buy":
                 continue
 
             reward = 1.0 if trade.profit_loss > 0 else -1.0

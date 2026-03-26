@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import 'api_client.dart';
 import 'login_page.dart';
+import 'models/holding.dart';
 import 'models/signal.dart';
 import 'models/trade.dart';
 
@@ -14,11 +15,13 @@ class DashboardPage extends StatefulWidget {
 
 class _DashboardPageState extends State<DashboardPage> {
   List<Signal> _signals = [];
+  List<Holding> _holdings = [];
   List<Trade> _history = [];
   Map<String, dynamic>? _learnResult;
   Map<String, dynamic>? _portfolio;
 
   bool _loadingSignals = false;
+  bool _loadingHoldings = false;
   bool _loadingHistory = false;
   bool _loadingLearn = false;
   bool _loadingPortfolio = false;
@@ -34,6 +37,7 @@ class _DashboardPageState extends State<DashboardPage> {
   Future<void> _refreshAll() async {
     await Future.wait([
       _refreshSignals(),
+      _refreshHoldings(),
       _refreshHistory(),
       _refreshPortfolio(),
     ]);
@@ -56,6 +60,23 @@ class _DashboardPageState extends State<DashboardPage> {
     } finally {
       if (mounted) {
         setState(() => _loadingSignals = false);
+      }
+    }
+  }
+
+  Future<void> _refreshHoldings() async {
+    if (!ApiClient.isLoggedIn()) return;
+    setState(() => _loadingHoldings = true);
+    try {
+      final holdings = await ApiClient.getHoldings();
+      if (mounted) {
+        setState(() => _holdings = holdings);
+      }
+    } catch (_) {
+      // Niet blokkeren; gebruiker kan handmatig verversen.
+    } finally {
+      if (mounted) {
+        setState(() => _loadingHoldings = false);
       }
     }
   }
@@ -94,40 +115,102 @@ class _DashboardPageState extends State<DashboardPage> {
     }
   }
 
-  Future<void> _executePaperTrade(Signal signal) async {
-    if (signal.action == 'hold') {
+  Future<void> _registerBuyFromSignal(Signal signal) async {
+    if (!ApiClient.isLoggedIn()) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('HOLD-signaal kan niet worden uitgevoerd.')),
+        const SnackBar(content: Text('Log eerst in om een aankoop te registreren.')),
       );
       return;
     }
 
-    final currentBalance = (_portfolio?['current_balance'] as num?)?.toDouble() ?? 2000.0;
+    final currentBalance = (_portfolio?['available_cash'] as num?)?.toDouble() ?? 2000.0;
     final suggestedAmount =
         (currentBalance * (signal.riskPct / 100.0) * 8.0).clamp(100.0, currentBalance * 0.4);
+    final amountController = TextEditingController(
+      text: suggestedAmount.toStringAsFixed(2),
+    );
+    final priceController = TextEditingController(text: signal.price.toStringAsFixed(4));
+    final quantityController = TextEditingController();
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text('Aankoop registreren: ${signal.symbol}'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: amountController,
+              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+              decoration: const InputDecoration(labelText: 'Totaal gekocht bedrag (€)'),
+            ),
+            TextField(
+              controller: priceController,
+              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+              decoration: const InputDecoration(labelText: 'Aankoopprijs per stuk'),
+            ),
+            TextField(
+              controller: quantityController,
+              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+              decoration: const InputDecoration(labelText: 'Aantal stuks (optioneel)'),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('Annuleren'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('Opslaan'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true) {
+      return;
+    }
+
+    final amount = double.tryParse(amountController.text.replaceAll(',', '.'));
+    final price = double.tryParse(priceController.text.replaceAll(',', '.'));
+    final quantity = quantityController.text.trim().isEmpty
+        ? null
+        : double.tryParse(quantityController.text.replaceAll(',', '.'));
+
+    if (amount == null || amount <= 0 || price == null || price <= 0) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Vul een geldig bedrag en prijs in.')),
+      );
+      return;
+    }
 
     try {
       final trade = await ApiClient.executeTrade(
         signal.symbol,
-        signal.action,
-        suggestedAmount,
-        signal.expectedReturnPct,
-        signal.riskPct,
+        'buy',
+        amount,
+        market: signal.market,
+        quantity: quantity,
+        price: price,
+        expectedReturnPct: signal.expectedReturnPct,
+        riskPct: signal.riskPct,
       );
 
       if (!mounted) return;
-      final isProfit = trade.profitLoss >= 0;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
-            'Paper trade ${trade.symbol} (${trade.action.toUpperCase()}) | '
-            'P/L: ${trade.profitLoss.toStringAsFixed(2)}',
+            'Aankoop opgeslagen: ${trade.symbol} | '
+            '${trade.quantity.toStringAsFixed(4)} stuks @ ${trade.price.toStringAsFixed(2)}',
           ),
-          backgroundColor: isProfit ? Colors.green[700] : Colors.red[700],
+          backgroundColor: Colors.green[700],
         ),
       );
 
-      await Future.wait([_refreshHistory(), _refreshPortfolio()]);
+      await Future.wait([_refreshHistory(), _refreshPortfolio(), _refreshHoldings()]);
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -161,6 +244,89 @@ class _DashboardPageState extends State<DashboardPage> {
       if (mounted) {
         setState(() => _loadingLearn = false);
       }
+    }
+  }
+
+  Future<void> _sellHolding(Holding holding) async {
+    final quantityController = TextEditingController(text: holding.quantity.toStringAsFixed(6));
+    final priceController = TextEditingController(text: holding.currentPrice.toStringAsFixed(4));
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text('Verkoop ${holding.symbol}'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: quantityController,
+              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+              decoration: const InputDecoration(labelText: 'Aantal te verkopen'),
+            ),
+            TextField(
+              controller: priceController,
+              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+              decoration: const InputDecoration(labelText: 'Verkoopprijs per stuk'),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('Annuleren'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('Verkoop'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true) {
+      return;
+    }
+
+    final quantity = double.tryParse(quantityController.text.replaceAll(',', '.'));
+    final price = double.tryParse(priceController.text.replaceAll(',', '.'));
+    if (quantity == null || quantity <= 0 || price == null || price <= 0) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Vul een geldige hoeveelheid en prijs in.')),
+      );
+      return;
+    }
+
+    try {
+      final trade = await ApiClient.executeTrade(
+        holding.symbol,
+        'sell',
+        0,
+        market: holding.market,
+        quantity: quantity,
+        price: price,
+        expectedReturnPct: holding.expectedReturnPct,
+        riskPct: holding.riskPct,
+      );
+      if (!mounted) return;
+      final isProfit = trade.profitLoss >= 0;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Verkoop verwerkt: ${trade.symbol} | resultaat ${trade.profitLoss.toStringAsFixed(2)}',
+          ),
+          backgroundColor: isProfit ? Colors.green[700] : Colors.red[700],
+        ),
+      );
+      await Future.wait([_refreshHistory(), _refreshPortfolio(), _refreshHoldings()]);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Verkoopfout: $e'),
+          backgroundColor: Colors.red[700],
+        ),
+      );
     }
   }
 
@@ -233,6 +399,8 @@ class _DashboardPageState extends State<DashboardPage> {
                 children: [
                   _buildPortfolioCard(),
                   const SizedBox(height: 20),
+                  _buildHoldingsCard(),
+                  const SizedBox(height: 20),
                   _buildAdviceCard(),
                   const SizedBox(height: 20),
                   _buildActionsCard(),
@@ -282,9 +450,54 @@ class _DashboardPageState extends State<DashboardPage> {
                 children: [
                   Text('Start: €${(_portfolio!['start_balance'] as num).toStringAsFixed(2)}'),
                   Text('Nu: €${(_portfolio!['current_balance'] as num).toStringAsFixed(2)}'),
+                  Text('Cash: €${(_portfolio!['available_cash'] as num).toStringAsFixed(2)}'),
+                  Text('Marktwaarde: €${(_portfolio!['market_value'] as num).toStringAsFixed(2)}'),
                   Text('P/L: ${(_portfolio!['total_profit_loss'] as num).toStringAsFixed(2)}'),
+                  Text('Posities: ${_portfolio!['holdings_count']}'),
                   Text('Trades vandaag: ${_portfolio!['daily_trade_count']} / 10'),
                 ],
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildHoldingsCard() {
+    final loggedIn = ApiClient.isLoggedIn();
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text('Mijn posities', style: Theme.of(context).textTheme.titleLarge),
+                IconButton(
+                  icon: const Icon(Icons.refresh),
+                  onPressed: _loadingHoldings ? null : _refreshHoldings,
+                ),
+              ],
+            ),
+            const Divider(),
+            if (!loggedIn)
+              const Text('Log in om je aankopen en verkoopsignalen te bekijken.')
+            else if (_loadingHoldings)
+              const Padding(
+                padding: EdgeInsets.all(12),
+                child: CircularProgressIndicator(),
+              )
+            else if (_holdings.isEmpty)
+              const Text('Nog geen aankopen geregistreerd.')
+            else
+              ListView.separated(
+                shrinkWrap: true,
+                physics: const NeverScrollableScrollPhysics(),
+                itemCount: _holdings.length,
+                separatorBuilder: (_, __) => const Divider(height: 1),
+                itemBuilder: (_, index) => _buildHoldingTile(_holdings[index]),
               ),
           ],
         ),
@@ -364,13 +577,56 @@ class _DashboardPageState extends State<DashboardPage> {
         '${signal.reason}',
       ),
       isThreeLine: true,
-      trailing: loggedIn && signal.action != 'hold'
+      trailing: loggedIn && signal.action == 'buy'
           ? FilledButton(
               style: FilledButton.styleFrom(backgroundColor: actionColor),
-              onPressed: () => _executePaperTrade(signal),
-              child: const Text('Paper trade'),
+              onPressed: () => _registerBuyFromSignal(signal),
+              child: const Text('Ik kocht dit'),
             )
           : const SizedBox.shrink(),
+    );
+  }
+
+  Widget _buildHoldingTile(Holding holding) {
+    final shouldSell = holding.recommendation == 'sell';
+    final pnlColor = holding.unrealizedProfitLoss >= 0 ? Colors.green : Colors.red;
+
+    return ListTile(
+      leading: CircleAvatar(
+        backgroundColor: shouldSell ? Colors.red : Colors.blueGrey,
+        child: Text(
+          shouldSell ? '↓' : '•',
+          style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+        ),
+      ),
+      title: Text(
+        '${holding.symbol} (${holding.market.toUpperCase()}) | '
+        '${holding.quantity.toStringAsFixed(4)} stuks',
+      ),
+      subtitle: Text(
+        'GAK ${holding.avgEntryPrice.toStringAsFixed(2)} | '
+        'nu ${holding.currentPrice.toStringAsFixed(2)} | '
+        'doel ${holding.targetPrice.toStringAsFixed(2)} | '
+        'stop ${holding.stopLossPrice.toStringAsFixed(2)}\n'
+        '${holding.recommendation.toUpperCase()} | ${holding.recommendationReason}',
+      ),
+      isThreeLine: true,
+      trailing: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: [
+          Text(
+            '${holding.unrealizedProfitLoss >= 0 ? '+' : ''}${holding.unrealizedProfitLoss.toStringAsFixed(2)}',
+            style: TextStyle(color: pnlColor, fontWeight: FontWeight.bold),
+          ),
+          Text('${holding.unrealizedProfitLossPct.toStringAsFixed(2)}%'),
+          if (shouldSell)
+            TextButton(
+              onPressed: () => _sellHolding(holding),
+              child: const Text('Verkoop'),
+            ),
+        ],
+      ),
     );
   }
 
@@ -448,7 +704,7 @@ class _DashboardPageState extends State<DashboardPage> {
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                Text('Paper Trade Geschiedenis', style: Theme.of(context).textTheme.titleLarge),
+                Text('Transactiegeschiedenis', style: Theme.of(context).textTheme.titleLarge),
                 IconButton(
                   icon: const Icon(Icons.refresh),
                   onPressed: _loadingHistory ? null : _refreshHistory,
@@ -464,7 +720,7 @@ class _DashboardPageState extends State<DashboardPage> {
                 child: CircularProgressIndicator(),
               )
             else if (_history.isEmpty)
-              const Text('Nog geen paper trades uitgevoerd.')
+              const Text('Nog geen transacties geregistreerd.')
             else
               ListView.separated(
                 shrinkWrap: true,
@@ -474,17 +730,23 @@ class _DashboardPageState extends State<DashboardPage> {
                 itemBuilder: (_, i) {
                   final trade = _history[_history.length - 1 - i];
                   final isProfit = trade.profitLoss >= 0;
+                  final iconColor = trade.action == 'buy'
+                      ? Colors.blue
+                      : isProfit
+                          ? Colors.green
+                          : Colors.red;
                   return ListTile(
                     leading: Icon(
-                      isProfit ? Icons.trending_up : Icons.trending_down,
-                      color: isProfit ? Colors.green : Colors.red,
+                      trade.action == 'buy' ? Icons.add_shopping_cart : Icons.sell,
+                      color: iconColor,
                     ),
                     title: Text(
                       '${trade.symbol} ${trade.action.toUpperCase()} | '
-                      '€${trade.amount.toStringAsFixed(0)}',
+                      '${trade.quantity.toStringAsFixed(4)} stuks',
                     ),
                     subtitle: Text(
                       '${trade.timestamp.substring(0, 19).replaceFirst('T', ' ')} | '
+                      'prijs ${trade.price.toStringAsFixed(2)} | '
                       'verwacht ${trade.expectedReturnPct.toStringAsFixed(2)}% | '
                       'risico ${trade.riskPct.toStringAsFixed(2)}% | ${trade.status}',
                     ),
