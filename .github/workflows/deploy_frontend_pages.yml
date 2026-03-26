@@ -23,7 +23,10 @@ jobs:
 
       - name: Build Flutter web
         working-directory: frontend
-        run: flutter build web --release
+        run: flutter build web --release --base-href "/${GITHUB_REPOSITORY#*/}/"
+
+      - name: Add SPA fallback for GitHub Pages
+        run: cp frontend/build/web/index.html frontend/build/web/404.html
 
       - name: Deploy to gh-pages branch
         uses: peaceiris/actions-gh-pages@v3

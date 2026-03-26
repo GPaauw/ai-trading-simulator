@@ -98,3 +98,12 @@ Auth vereist:
 Gebruik [.github/workflows/deploy_frontend_pages.yml](.github/workflows/deploy_frontend_pages.yml) en zet GitHub Pages op bron `gh-pages` / root.
 
 Als de frontend met een publieke backend moet praten, zet dan in de frontend-config de juiste backend-URL of voeg die later als build-time configuratie toe.
+
+Benodigd om de Pages-versie echt werkend te krijgen:
+- GitHub Actions moet aan staan voor de repository.
+- In GitHub Pages: kies `Deploy from a branch`, branch `gh-pages`, folder `/ (root)`.
+- De workflow bouwt met de juiste base-href voor deze repo, zodat assets laden onder `/ai-trading-simulator/`.
+- De backend moet publiek bereikbaar zijn via HTTPS. De frontend gebruikt standaard `https://ai-trading-simulator.onrender.com`.
+- Op Render moeten minimaal `APP_USERNAME` en `APP_PASSWORD` ingesteld zijn.
+- Voor e-mailalerts zijn extra variabelen nodig: `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `ALERT_FROM_EMAIL`, `ALERT_TO_EMAIL`.
+- Aanbevolen extra backend variabelen: `TOKEN_SECRET` voor stateless auth en `START_BALANCE=2000`.
