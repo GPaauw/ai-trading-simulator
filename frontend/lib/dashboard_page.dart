@@ -620,8 +620,10 @@ class _DashboardPageState extends State<DashboardPage> {
   }
 
   Widget _buildHoldingTile(Holding holding) {
-    final actionable = holding.recommendation == 'sell_now' || holding.recommendation == 'take_partial_profit';
     final pnlColor = holding.unrealizedProfitLoss >= 0 ? Colors.green : Colors.red;
+    final buttonLabel = holding.recommendation == 'take_partial_profit'
+        ? 'Neem winst'
+        : 'Verkoop';
 
     return ListTile(
       leading: CircleAvatar(
@@ -660,11 +662,10 @@ class _DashboardPageState extends State<DashboardPage> {
             style: TextStyle(color: pnlColor, fontWeight: FontWeight.bold),
           ),
           Text('${holding.unrealizedProfitLossPct.toStringAsFixed(2)}%'),
-          if (actionable)
-            TextButton(
-              onPressed: () => _sellHolding(holding),
-              child: Text(holding.recommendation == 'take_partial_profit' ? 'Neem winst' : 'Verkoop'),
-            ),
+          TextButton(
+            onPressed: () => _sellHolding(holding),
+            child: Text(buttonLabel),
+          ),
         ],
       ),
     );
