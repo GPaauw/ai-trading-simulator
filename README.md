@@ -4,9 +4,13 @@ Deze app geeft marktadvies in plaats van random trades:
 - FastAPI-backend met live gratis data
 - Flutter Web-frontend met adviesdashboard
 - Markten: US stocks, EU stocks en crypto
-- Advies per instrument: `buy/sell/hold`, risico%, verwachte winst%
+- Marktadvies toont alleen koopkansen, opgesplitst in aandelen en crypto
+- Koopadvies krijgt een echte score en labels zoals `Beste kansen vandaag`
 - Registratie van echte aankopen met live holdings-overzicht
-- Verkoopsignalen op basis van actuele marktprijs, stop-loss, koersdoel en modeladvies
+- Verkoopadvies toont alleen je eigen bezittingen met `houden` of `verkopen`
+- Verkoopadvies ondersteunt triggers zoals `Verkoop nu`, `Neem deels winst` en `Houd nog vast`
+- Positie-alerts kunnen mailen zodra een advies omslaat naar verkopen of winst nemen
+- Holdings, tradehistorie en cash-balans worden persistent opgeslagen in SQLite
 - E-mailalerts (realtime + dagoverzicht)
 
 ## Data bronnen (gratis)
@@ -30,6 +34,7 @@ Verplicht:
 
 Optioneel:
 - `START_BALANCE` (default: `2000`)
+- `TRADING_DB_PATH` (default: `backend/data/trading.sqlite3`)
 
 ## E-mail alerts configuratie
 
@@ -62,20 +67,20 @@ flutter run -d chrome
 ## Hoe je de app gebruikt
 
 1. Log in met je account.
-2. Bekijk `Marktadvies`: per asset zie je actie, risico% en verwachte winst%.
+2. Bekijk `Koopadvies`: alleen koopkansen, opgesplitst in aandelen en crypto, met score en ranking.
 3. Klik bij een `BUY`-advies op `Ik kocht dit` en vul in wat je echt hebt gekocht.
-4. Bekijk `Mijn posities` voor live P/L, stop-loss, koersdoel en een `SELL/HOLD` aanbeveling.
-5. Gebruik `Verkoop` bij een positie zodra je die wilt sluiten; de app rekent het resultaat uit op basis van de actuele prijs.
+4. Bekijk `Verkoopadvies voor jouw posities`: alleen assets die je bezit, met `Verkoop nu`, `Neem deels winst` of `Houd nog vast`.
+5. Gebruik `Verkoop` of `Neem winst` bij een positie; de app vult bij gedeeltelijke winstname alvast een logisch deel van je positie in.
 6. Volg je resultaat in `Portfolio` en `Transactiegeschiedenis`.
 7. Klik op `Leer van markt + trades` om risico- en confidence-inzichten te updaten.
-8. Klik op `Stuur realtime alerts` of `Stuur dag samenvatting` voor e-mailnotificaties.
+8. Klik op `Stuur realtime alerts` of `Stuur dag samenvatting` voor e-mailnotificaties, inclusief statuswissels in je posities.
 
 ## API endpoints
 
 Publiek:
 - `GET /health`
 - `GET /signals`
-- `GET /advice`
+- `GET /advice` (alleen koopadvies)
 - `GET /watchlist`
 
 Auth vereist:
@@ -83,6 +88,7 @@ Auth vereist:
 - `POST /trade`
 - `GET /history`
 - `GET /holdings`
+- `GET /sell-advice`
 - `GET /portfolio`
 - `POST /learn`
 - `POST /alerts/realtime`

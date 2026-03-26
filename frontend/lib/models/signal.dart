@@ -7,6 +7,8 @@ class Signal {
   final double price;
   final double riskPct;
   final double expectedReturnPct;
+  final double rankingScore;
+  final String rankLabel;
   final String reason;
 
   Signal({
@@ -18,6 +20,8 @@ class Signal {
     required this.price,
     required this.riskPct,
     required this.expectedReturnPct,
+    required this.rankingScore,
+    required this.rankLabel,
     required this.reason,
   });
 
@@ -31,6 +35,8 @@ class Signal {
       price: (json['price'] as num).toDouble(),
       riskPct: (json['risk_pct'] as num?)?.toDouble() ?? 0.0,
       expectedReturnPct: (json['expected_return_pct'] as num?)?.toDouble() ?? 0.0,
+      rankingScore: (json['ranking_score'] as num?)?.toDouble() ?? 0.0,
+      rankLabel: (json['rank_label'] as String?) ?? '',
       reason: (json['reason'] as String?) ?? '',
     );
   }

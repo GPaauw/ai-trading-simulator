@@ -43,6 +43,17 @@ class ApiClient {
         .toList();
   }
 
+  static Future<List<Holding>> getSellAdvice() async {
+    final response = await http.get(Uri.parse('$kBackendUrl/sell-advice'), headers: _headers());
+    if (response.statusCode != 200) {
+      throw Exception('Fout bij ophalen verkoopadvies (${response.statusCode})');
+    }
+    final List<dynamic> data = jsonDecode(response.body) as List<dynamic>;
+    return data
+        .map((e) => Holding.fromJson(e as Map<String, dynamic>))
+        .toList();
+  }
+
   static Future<Trade> executeTrade(
     String symbol,
     String action,

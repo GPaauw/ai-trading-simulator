@@ -10,4 +10,6 @@ class Signal(BaseModel):
     price: float
     risk_pct: float
     expected_return_pct: float
+    ranking_score: float = 0.0
+    rank_label: str = ""
     reason: str

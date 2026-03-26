@@ -29,7 +29,7 @@ data_service = DataService()
 learning_agent = LearningAgent()
 market_data_service = MarketDataService()
 advice_engine = AdviceEngine(market_data_service)
-alert_service = AlertService()
+alert_service = AlertService(data_service)
 
 # Limieten (aanpasbaar)
 LIMITS = {
@@ -52,7 +52,7 @@ def get_signals() -> List[Signal]:
 
 @app.get("/advice", response_model=List[Signal])
 def get_advice() -> List[Signal]:
-    return advice_engine.build_signals()
+    return _build_buy_advice()
 
 
 @app.get("/watchlist")
@@ -92,6 +92,11 @@ def get_holdings() -> List[HoldingView]:
     return _build_holdings_view()
 
 
+@app.get("/sell-advice", dependencies=[Depends(verify_token)], response_model=List[HoldingView])
+def get_sell_advice() -> List[HoldingView]:
+    return _build_sell_advice()
+
+
 @app.post("/learn", dependencies=[Depends(verify_token)])
 def learn() -> Dict[str, Any]:
     history = data_service.get_trade_history()
@@ -102,18 +107,20 @@ def learn() -> Dict[str, Any]:
 
 @app.post("/alerts/realtime", dependencies=[Depends(verify_token)])
 def send_realtime_alerts() -> Dict[str, Any]:
-    signals = advice_engine.build_signals()
+    signals = _build_buy_advice()
+    sell_advice = _build_sell_advice()
     try:
-        return alert_service.send_realtime_alerts(signals)
+        return alert_service.send_realtime_alerts(signals, sell_advice)
     except RuntimeError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
 
 @app.post("/alerts/summary", dependencies=[Depends(verify_token)])
 def send_daily_summary() -> Dict[str, Any]:
-    signals = advice_engine.build_signals()
+    signals = _build_buy_advice()
+    sell_advice = _build_sell_advice()
     try:
-        return alert_service.send_daily_summary(signals)
+        return alert_service.send_daily_summary(signals, sell_advice)
     except RuntimeError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
@@ -153,3 +160,23 @@ def _build_holdings_view() -> List[HoldingView]:
         )
 
     return sorted(views, key=lambda item: item.unrealized_profit_loss_pct, reverse=True)
+
+
+def _build_buy_advice() -> List[Signal]:
+    buy_signals = advice_engine.build_ranked_buy_signals()
+    return sorted(
+        buy_signals,
+        key=lambda signal: (0 if signal.market == "us" or signal.market == "eu" else 1, -signal.ranking_score),
+    )
+
+
+def _build_sell_advice() -> List[HoldingView]:
+    holdings = _build_holdings_view()
+    return sorted(
+        holdings,
+        key=lambda holding: (
+            0 if holding.recommendation == "sell_now" else 1 if holding.recommendation == "take_partial_profit" else 2,
+            -holding.position_score,
+            -abs(holding.unrealized_profit_loss_pct),
+        ),
+    )

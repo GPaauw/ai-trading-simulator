@@ -30,6 +30,12 @@ class AdviceEngine:
     def build_signal_map(self) -> dict[str, Signal]:
         return {signal.symbol: signal for signal in self.build_signals()}
 
+    def build_ranked_buy_signals(self) -> list[Signal]:
+        return sorted(
+            [signal for signal in self.build_signals() if signal.action == "buy"],
+            key=lambda signal: (-signal.ranking_score, -signal.confidence, -signal.expected_return_pct),
+        )
+
     def build_holding_view(
         self,
         holding: dict[str, object],
@@ -48,21 +54,47 @@ class AdviceEngine:
         risk_pct = signal.risk_pct if signal else 1.2
         expected_return_pct = signal.expected_return_pct if signal else 2.0
         confidence = signal.confidence if signal else 0.55
+        recommendation_label = "Houd nog vast"
+        suggested_action = "hold"
+        suggested_sell_fraction = 0.0
 
         stop_loss_price = avg_entry_price * (1.0 - (risk_pct / 100.0))
         target_price = avg_entry_price * (1.0 + (expected_return_pct / 100.0))
+        stretch_target_price = avg_entry_price * (1.0 + ((expected_return_pct * 1.35) / 100.0))
+        position_score = _clamp((confidence * 100) + unrealized_profit_loss_pct - (risk_pct * 4.5), 0.0, 100.0)
 
         recommendation = "hold"
         reason = "Positie monitoren; nog geen verkooptrigger geraakt."
         if current_price <= stop_loss_price:
-            recommendation = "sell"
+            recommendation = "sell_now"
+            recommendation_label = "Verkoop nu"
+            suggested_action = "sell"
+            suggested_sell_fraction = 1.0
             reason = "Stop-loss geraakt op basis van actuele marktprijs."
         elif signal and signal.action == "sell" and signal.confidence >= 0.64:
-            recommendation = "sell"
+            recommendation = "sell_now"
+            recommendation_label = "Verkoop nu"
+            suggested_action = "sell"
+            suggested_sell_fraction = 1.0
             reason = "Actueel model geeft een sell-signaal met voldoende zekerheid."
-        elif current_price >= target_price and (not signal or signal.action != "buy"):
-            recommendation = "sell"
-            reason = "Koersdoel bereikt en momentum neemt niet verder toe."
+        elif current_price >= stretch_target_price:
+            recommendation = "sell_now"
+            recommendation_label = "Verkoop nu"
+            suggested_action = "sell"
+            suggested_sell_fraction = 1.0
+            reason = "Sterk koersdoel ruim overschreden; winst veiligstellen is verstandig."
+        elif current_price >= target_price and signal and signal.action == "buy" and signal.confidence >= 0.7:
+            recommendation = "take_partial_profit"
+            recommendation_label = "Neem deels winst"
+            suggested_action = "sell_partial"
+            suggested_sell_fraction = 0.5
+            reason = "Koersdoel bereikt, maar momentum blijft positief; gedeeltelijk winst nemen is logisch."
+        elif unrealized_profit_loss_pct >= max(expected_return_pct, 4.0):
+            recommendation = "take_partial_profit"
+            recommendation_label = "Neem deels winst"
+            suggested_action = "sell_partial"
+            suggested_sell_fraction = 0.35
+            reason = "De positie staat duidelijk in de plus; gedeeltelijk winst nemen verlaagt risico."
         elif signal and signal.action == "buy":
             reason = "Trend blijft positief; positie kan worden aangehouden."
 
@@ -77,12 +109,16 @@ class AdviceEngine:
             unrealized_profit_loss=round(unrealized_profit_loss, 2),
             unrealized_profit_loss_pct=round(unrealized_profit_loss_pct, 3),
             recommendation=recommendation,
+            recommendation_label=recommendation_label,
             recommendation_reason=reason,
+            suggested_action=suggested_action,
+            suggested_sell_fraction=round(suggested_sell_fraction, 3),
             target_price=round(target_price, 4),
             stop_loss_price=round(stop_loss_price, 4),
             confidence=round(confidence, 4),
             expected_return_pct=round(expected_return_pct, 3),
             risk_pct=round(risk_pct, 3),
+            position_score=round(position_score, 3),
             opened_at=str(holding["opened_at"]),
             updated_at=str(holding["updated_at"]),
         )
@@ -129,6 +165,23 @@ class AdviceEngine:
         risk_pct = _clamp(1.4 - (volatility_pct * 0.06) + market_risk_bias, 0.4, 2.5)
 
         expected_trade_return_pct = abs(expected_move_pct)
+        ranking_score = _clamp(
+            (confidence * 100)
+            + (expected_trade_return_pct * 8.0)
+            + max(momentum_pct, 0.0) * 2.5
+            - (risk_pct * 5.0),
+            0.0,
+            100.0,
+        )
+        rank_label = ""
+        if action == "buy":
+            if ranking_score >= 85:
+                rank_label = "Beste kansen vandaag"
+            elif ranking_score >= 74:
+                rank_label = "Sterke setup"
+            else:
+                rank_label = "Interessante kans"
+
         reason = (
             f"SMA5/SMA20={sma_short:.2f}/{sma_long:.2f}, RSI={rsi:.1f}, "
             f"momentum={momentum_pct:.2f}%, vol={volatility_pct:.2f}%"
@@ -143,6 +196,8 @@ class AdviceEngine:
             price=round(price, 4),
             risk_pct=round(risk_pct, 3),
             expected_return_pct=round(expected_trade_return_pct, 3),
+            ranking_score=round(ranking_score, 3),
+            rank_label=rank_label,
             reason=reason,
         )
 

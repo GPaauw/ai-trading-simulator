@@ -1,4 +1,5 @@
 import os
+import sqlite3
 from datetime import date, datetime, timezone
 from typing import Any, Dict, List
 
@@ -8,25 +9,107 @@ from models.trade import TradeResult
 
 class DataService:
     def __init__(self) -> None:
-        self._trade_history: List[TradeResult] = []
-        self._holdings: Dict[str, Dict[str, Any]] = {}
-        self._start_balance = float(os.getenv("START_BALANCE", "2000"))
-        self._cash_balance = self._start_balance
+        default_path = os.path.join(
+            os.path.dirname(os.path.dirname(__file__)),
+            "data",
+            "trading.sqlite3",
+        )
+        self._db_path = os.getenv("TRADING_DB_PATH", default_path)
+        db_dir = os.path.dirname(self._db_path)
+        if db_dir:
+            os.makedirs(db_dir, exist_ok=True)
+        self._configured_start_balance = float(os.getenv("START_BALANCE", "2000"))
+        self._init_db()
 
     def get_trade_history(self) -> List[TradeResult]:
-        return self._trade_history
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, symbol, action, amount, quantity, price, profit_loss, timestamp, status,
+                       expected_return_pct, risk_pct
+                FROM trade_history
+                ORDER BY timestamp ASC
+                """
+            ).fetchall()
+        return [self._trade_from_row(row) for row in rows]
 
     def add_trade(self, trade: TradeResult) -> None:
-        self._trade_history.append(trade)
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO trade_history (
+                    id, symbol, action, amount, quantity, price, profit_loss, timestamp, status,
+                    expected_return_pct, risk_pct
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    trade.id,
+                    trade.symbol,
+                    trade.action,
+                    trade.amount,
+                    trade.quantity,
+                    trade.price,
+                    trade.profit_loss,
+                    trade.timestamp,
+                    trade.status,
+                    trade.expected_return_pct,
+                    trade.risk_pct,
+                ),
+            )
+            conn.commit()
 
     def get_holdings(self) -> List[Dict[str, Any]]:
-        return list(self._holdings.values())
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT symbol, market, quantity, invested_amount, avg_entry_price, opened_at, updated_at
+                FROM holdings
+                ORDER BY symbol ASC
+                """
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def get_holding(self, symbol: str) -> Dict[str, Any] | None:
-        return self._holdings.get(symbol.upper())
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT symbol, market, quantity, invested_amount, avg_entry_price, opened_at, updated_at
+                FROM holdings
+                WHERE symbol = ?
+                """,
+                (symbol.upper(),),
+            ).fetchone()
+        return dict(row) if row else None
 
     def get_cash_balance(self) -> float:
-        return self._cash_balance
+        return float(self._get_setting("cash_balance", str(self._configured_start_balance)))
+
+    def get_last_recommendation(self, symbol: str) -> str | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT recommendation FROM holding_alert_states WHERE symbol = ?",
+                (symbol.upper(),),
+            ).fetchone()
+        return str(row["recommendation"]) if row else None
+
+    def set_last_recommendation(self, symbol: str, recommendation: str) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO holding_alert_states(symbol, recommendation, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(symbol) DO UPDATE SET
+                    recommendation = excluded.recommendation,
+                    updated_at = excluded.updated_at
+                """,
+                (symbol.upper(), recommendation, datetime.now(timezone.utc).isoformat()),
+            )
+            conn.commit()
+
+    def clear_recommendation_state(self, symbol: str) -> None:
+        with self._connect() as conn:
+            conn.execute("DELETE FROM holding_alert_states WHERE symbol = ?", (symbol.upper(),))
+            conn.commit()
 
     def record_buy(
         self,
@@ -39,58 +122,115 @@ class DataService:
     ) -> Dict[str, Any]:
         normalized_symbol = symbol.upper()
         now = datetime.now(timezone.utc).isoformat()
-        existing = self._holdings.get(normalized_symbol)
+        current_cash = self.get_cash_balance()
 
-        if existing:
-            total_quantity = float(existing["quantity"]) + quantity
-            total_invested = float(existing["invested_amount"]) + amount
-            existing["quantity"] = total_quantity
-            existing["invested_amount"] = total_invested
-            existing["avg_entry_price"] = total_invested / total_quantity
-            existing["updated_at"] = now
-            holding = existing
-        else:
-            holding = {
-                "symbol": normalized_symbol,
-                "market": market,
-                "quantity": quantity,
-                "invested_amount": amount,
-                "avg_entry_price": price,
-                "opened_at": now,
-                "updated_at": now,
-            }
-            self._holdings[normalized_symbol] = holding
+        with self._connect() as conn:
+            existing = conn.execute(
+                """
+                SELECT symbol, market, quantity, invested_amount, avg_entry_price, opened_at, updated_at
+                FROM holdings
+                WHERE symbol = ?
+                """,
+                (normalized_symbol,),
+            ).fetchone()
 
-        self._cash_balance -= amount
+            if existing:
+                total_quantity = float(existing["quantity"]) + quantity
+                total_invested = float(existing["invested_amount"]) + amount
+                avg_entry_price = total_invested / total_quantity
+                conn.execute(
+                    """
+                    UPDATE holdings
+                    SET quantity = ?, invested_amount = ?, avg_entry_price = ?, updated_at = ?
+                    WHERE symbol = ?
+                    """,
+                    (total_quantity, total_invested, avg_entry_price, now, normalized_symbol),
+                )
+                holding = {
+                    "symbol": normalized_symbol,
+                    "market": str(existing["market"]),
+                    "quantity": total_quantity,
+                    "invested_amount": total_invested,
+                    "avg_entry_price": avg_entry_price,
+                    "opened_at": str(existing["opened_at"]),
+                    "updated_at": now,
+                }
+            else:
+                conn.execute(
+                    """
+                    INSERT INTO holdings(symbol, market, quantity, invested_amount, avg_entry_price, opened_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (normalized_symbol, market, quantity, amount, price, now, now),
+                )
+                holding = {
+                    "symbol": normalized_symbol,
+                    "market": market,
+                    "quantity": quantity,
+                    "invested_amount": amount,
+                    "avg_entry_price": price,
+                    "opened_at": now,
+                    "updated_at": now,
+                }
+
+            conn.execute(
+                "INSERT INTO settings(key, value) VALUES ('cash_balance', ?)"
+                " ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (str(current_cash - amount),),
+            )
+            conn.commit()
+
         return holding
 
     def record_sell(self, *, symbol: str, quantity: float, price: float) -> Dict[str, float | str]:
         normalized_symbol = symbol.upper()
-        holding = self._holdings.get(normalized_symbol)
-        if not holding:
-            raise ValueError(f"Geen positie gevonden voor {normalized_symbol}")
-
-        current_quantity = float(holding["quantity"])
-        if quantity <= 0 or quantity > current_quantity:
-            raise ValueError("Ongeldige verkoophoeveelheid")
-
-        avg_entry_price = float(holding["avg_entry_price"])
-        cost_basis = avg_entry_price * quantity
-        proceeds = price * quantity
-        realized_profit_loss = proceeds - cost_basis
-        remaining_quantity = current_quantity - quantity
+        current_cash = self.get_cash_balance()
         now = datetime.now(timezone.utc).isoformat()
 
-        if remaining_quantity <= 1e-8:
-            self._holdings.pop(normalized_symbol, None)
-            status = "executed: positie gesloten"
-        else:
-            holding["quantity"] = remaining_quantity
-            holding["invested_amount"] = avg_entry_price * remaining_quantity
-            holding["updated_at"] = now
-            status = "executed: gedeeltelijk verkocht"
+        with self._connect() as conn:
+            holding = conn.execute(
+                """
+                SELECT symbol, market, quantity, invested_amount, avg_entry_price, opened_at, updated_at
+                FROM holdings
+                WHERE symbol = ?
+                """,
+                (normalized_symbol,),
+            ).fetchone()
+            if not holding:
+                raise ValueError(f"Geen positie gevonden voor {normalized_symbol}")
 
-        self._cash_balance += proceeds
+            current_quantity = float(holding["quantity"])
+            if quantity <= 0 or quantity > current_quantity:
+                raise ValueError("Ongeldige verkoophoeveelheid")
+
+            avg_entry_price = float(holding["avg_entry_price"])
+            cost_basis = avg_entry_price * quantity
+            proceeds = price * quantity
+            realized_profit_loss = proceeds - cost_basis
+            remaining_quantity = current_quantity - quantity
+
+            if remaining_quantity <= 1e-8:
+                conn.execute("DELETE FROM holdings WHERE symbol = ?", (normalized_symbol,))
+                conn.execute("DELETE FROM holding_alert_states WHERE symbol = ?", (normalized_symbol,))
+                status = "executed: positie gesloten"
+            else:
+                conn.execute(
+                    """
+                    UPDATE holdings
+                    SET quantity = ?, invested_amount = ?, updated_at = ?
+                    WHERE symbol = ?
+                    """,
+                    (remaining_quantity, avg_entry_price * remaining_quantity, now, normalized_symbol),
+                )
+                status = "executed: gedeeltelijk verkocht"
+
+            conn.execute(
+                "INSERT INTO settings(key, value) VALUES ('cash_balance', ?)"
+                " ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (str(current_cash + proceeds),),
+            )
+            conn.commit()
+
         return {
             "quantity": quantity,
             "proceeds": proceeds,
@@ -100,20 +240,115 @@ class DataService:
 
     def get_daily_trade_count(self) -> int:
         today = date.today().isoformat()
-        return sum(1 for t in self._trade_history if t.timestamp.startswith(today))
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS count FROM trade_history WHERE timestamp LIKE ?",
+                (f"{today}%",),
+            ).fetchone()
+        return int(row["count"]) if row else 0
 
     def get_portfolio(self, holdings: List[HoldingView] | None = None) -> dict:
         holdings = holdings or []
         invested_value = sum(h.invested_amount for h in holdings)
         market_value = sum(h.market_value for h in holdings)
-        total_equity = self._cash_balance + market_value
+        total_equity = self.get_cash_balance() + market_value
+        start_balance = float(self._get_setting("start_balance", str(self._configured_start_balance)))
         return {
-            "start_balance": round(self._start_balance, 2),
+            "start_balance": round(start_balance, 2),
             "current_balance": round(total_equity, 2),
-            "available_cash": round(self._cash_balance, 2),
+            "available_cash": round(self.get_cash_balance(), 2),
             "invested_value": round(invested_value, 2),
             "market_value": round(market_value, 2),
             "holdings_count": len(holdings),
-            "total_profit_loss": round(total_equity - self._start_balance, 2),
+            "total_profit_loss": round(total_equity - start_balance, 2),
             "daily_trade_count": self.get_daily_trade_count(),
         }
+
+    def _init_db(self) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS trade_history (
+                    id TEXT PRIMARY KEY,
+                    symbol TEXT NOT NULL,
+                    action TEXT NOT NULL,
+                    amount REAL NOT NULL,
+                    quantity REAL NOT NULL,
+                    price REAL NOT NULL,
+                    profit_loss REAL NOT NULL,
+                    timestamp TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    expected_return_pct REAL NOT NULL,
+                    risk_pct REAL NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS holdings (
+                    symbol TEXT PRIMARY KEY,
+                    market TEXT NOT NULL,
+                    quantity REAL NOT NULL,
+                    invested_amount REAL NOT NULL,
+                    avg_entry_price REAL NOT NULL,
+                    opened_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS holding_alert_states (
+                    symbol TEXT PRIMARY KEY,
+                    recommendation TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+
+            existing_start = conn.execute("SELECT value FROM settings WHERE key = 'start_balance'").fetchone()
+            existing_cash = conn.execute("SELECT value FROM settings WHERE key = 'cash_balance'").fetchone()
+            if not existing_start:
+                conn.execute(
+                    "INSERT INTO settings(key, value) VALUES ('start_balance', ?)",
+                    (str(self._configured_start_balance),),
+                )
+            if not existing_cash:
+                conn.execute(
+                    "INSERT INTO settings(key, value) VALUES ('cash_balance', ?)",
+                    (str(self._configured_start_balance),),
+                )
+            conn.commit()
+
+    def _get_setting(self, key: str, default: str) -> str:
+        with self._connect() as conn:
+            row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+        return str(row["value"]) if row else default
+
+    def _connect(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(self._db_path)
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    def _trade_from_row(self, row: sqlite3.Row) -> TradeResult:
+        return TradeResult(
+            id=str(row["id"]),
+            symbol=str(row["symbol"]),
+            action=str(row["action"]),
+            amount=float(row["amount"]),
+            quantity=float(row["quantity"]),
+            price=float(row["price"]),
+            profit_loss=float(row["profit_loss"]),
+            timestamp=str(row["timestamp"]),
+            status=str(row["status"]),
+            expected_return_pct=float(row["expected_return_pct"]),
+            risk_pct=float(row["risk_pct"]),
+        )

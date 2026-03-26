@@ -68,7 +68,7 @@ class _DashboardPageState extends State<DashboardPage> {
     if (!ApiClient.isLoggedIn()) return;
     setState(() => _loadingHoldings = true);
     try {
-      final holdings = await ApiClient.getHoldings();
+      final holdings = await ApiClient.getSellAdvice();
       if (mounted) {
         setState(() => _holdings = holdings);
       }
@@ -248,7 +248,10 @@ class _DashboardPageState extends State<DashboardPage> {
   }
 
   Future<void> _sellHolding(Holding holding) async {
-    final quantityController = TextEditingController(text: holding.quantity.toStringAsFixed(6));
+    final defaultQuantity = holding.suggestedSellFraction > 0
+        ? holding.quantity * holding.suggestedSellFraction
+        : holding.quantity;
+    final quantityController = TextEditingController(text: defaultQuantity.toStringAsFixed(6));
     final priceController = TextEditingController(text: holding.currentPrice.toStringAsFixed(4));
 
     final confirmed = await showDialog<bool>(
@@ -465,6 +468,8 @@ class _DashboardPageState extends State<DashboardPage> {
 
   Widget _buildHoldingsCard() {
     final loggedIn = ApiClient.isLoggedIn();
+    final stockHoldings = _holdings.where((holding) => holding.market != 'crypto').toList();
+    final cryptoHoldings = _holdings.where((holding) => holding.market == 'crypto').toList();
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(16),
@@ -474,7 +479,7 @@ class _DashboardPageState extends State<DashboardPage> {
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                Text('Mijn posities', style: Theme.of(context).textTheme.titleLarge),
+                Text('Verkoopadvies voor jouw posities', style: Theme.of(context).textTheme.titleLarge),
                 IconButton(
                   icon: const Icon(Icons.refresh),
                   onPressed: _loadingHoldings ? null : _refreshHoldings,
@@ -483,22 +488,19 @@ class _DashboardPageState extends State<DashboardPage> {
             ),
             const Divider(),
             if (!loggedIn)
-              const Text('Log in om je aankopen en verkoopsignalen te bekijken.')
+              const Text('Log in om verkoopadvies voor je bezittingen te bekijken.')
             else if (_loadingHoldings)
               const Padding(
                 padding: EdgeInsets.all(12),
                 child: CircularProgressIndicator(),
               )
             else if (_holdings.isEmpty)
-              const Text('Nog geen aankopen geregistreerd.')
-            else
-              ListView.separated(
-                shrinkWrap: true,
-                physics: const NeverScrollableScrollPhysics(),
-                itemCount: _holdings.length,
-                separatorBuilder: (_, __) => const Divider(height: 1),
-                itemBuilder: (_, index) => _buildHoldingTile(_holdings[index]),
-              ),
+              const Text('Nog geen bezittingen geregistreerd.')
+            else ...[
+              _buildHoldingSection('Aandelen die je bezit', stockHoldings),
+              const SizedBox(height: 16),
+              _buildHoldingSection('Crypto die je bezit', cryptoHoldings),
+            ],
           ],
         ),
       ),
@@ -506,6 +508,8 @@ class _DashboardPageState extends State<DashboardPage> {
   }
 
   Widget _buildAdviceCard() {
+    final stockSignals = _signals.where((signal) => signal.market != 'crypto').toList();
+    final cryptoSignals = _signals.where((signal) => signal.market == 'crypto').toList();
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(16),
@@ -515,7 +519,7 @@ class _DashboardPageState extends State<DashboardPage> {
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                Text('Marktadvies (08:00-16:00)', style: Theme.of(context).textTheme.titleLarge),
+                Text('Koopadvies uit de markt', style: Theme.of(context).textTheme.titleLarge),
                 IconButton(
                   icon: const Icon(Icons.refresh),
                   onPressed: _loadingSignals ? null : _refreshSignals,
@@ -531,53 +535,61 @@ class _DashboardPageState extends State<DashboardPage> {
             else if (_signalError != null)
               Text(_signalError!, style: TextStyle(color: Theme.of(context).colorScheme.error))
             else if (_signals.isEmpty)
-              const Text('Geen adviezen beschikbaar.')
-            else
-              ListView.separated(
-                shrinkWrap: true,
-                physics: const NeverScrollableScrollPhysics(),
-                itemCount: _signals.length,
-                separatorBuilder: (_, __) => const Divider(height: 1),
-                itemBuilder: (_, i) => _buildSignalTile(_signals[i]),
-              ),
+              const Text('Er zijn nu geen koopkansen volgens het model.')
+            else ...[
+              _buildSignalSection('Aandelen', stockSignals),
+              const SizedBox(height: 16),
+              _buildSignalSection('Crypto', cryptoSignals),
+            ],
           ],
         ),
       ),
     );
   }
 
+  Widget _buildSignalSection(String title, List<Signal> signals) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(title, style: Theme.of(context).textTheme.titleMedium),
+        const SizedBox(height: 8),
+        if (signals.isEmpty)
+          Text('Geen koopadvies beschikbaar voor $title.')
+        else
+          ListView.separated(
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            itemCount: signals.length,
+            separatorBuilder: (_, __) => const Divider(height: 1),
+            itemBuilder: (_, i) => _buildSignalTile(signals[i]),
+          ),
+      ],
+    );
+  }
+
   Widget _buildSignalTile(Signal signal) {
     final loggedIn = ApiClient.isLoggedIn();
-    final actionColor = switch (signal.action) {
-      'buy' => Colors.green,
-      'sell' => Colors.red,
-      _ => Colors.orange,
-    };
+    const actionColor = Colors.green;
 
     return ListTile(
       leading: CircleAvatar(
         backgroundColor: actionColor,
-        child: Text(
-          signal.action == 'buy'
-              ? '↑'
-              : signal.action == 'sell'
-                  ? '↓'
-                  : '•',
-          style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-        ),
+        child: const Text('↑', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
       ),
       title: Text(
         '${signal.symbol} (${signal.market.toUpperCase()})  —  '
-        '${signal.action.toUpperCase()} @ ${signal.price.toStringAsFixed(2)}',
+        'BUY @ ${signal.price.toStringAsFixed(2)}',
       ),
       subtitle: Text(
+        '${signal.rankLabel.isEmpty ? 'Koopkans' : signal.rankLabel} | '
+        'score ${signal.rankingScore.toStringAsFixed(1)}\n'
         'Verwacht: ${signal.expectedReturnPct.toStringAsFixed(2)}% | '
         'Risico: ${signal.riskPct.toStringAsFixed(2)}% | '
         'Zekerheid: ${(signal.confidence * 100).toStringAsFixed(0)}%\n'
         '${signal.reason}',
       ),
       isThreeLine: true,
-      trailing: loggedIn && signal.action == 'buy'
+      trailing: loggedIn
           ? FilledButton(
               style: FilledButton.styleFrom(backgroundColor: actionColor),
               onPressed: () => _registerBuyFromSignal(signal),
@@ -587,15 +599,43 @@ class _DashboardPageState extends State<DashboardPage> {
     );
   }
 
+  Widget _buildHoldingSection(String title, List<Holding> holdings) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(title, style: Theme.of(context).textTheme.titleMedium),
+        const SizedBox(height: 8),
+        if (holdings.isEmpty)
+          Text('Geen posities beschikbaar in $title.')
+        else
+          ListView.separated(
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            itemCount: holdings.length,
+            separatorBuilder: (_, __) => const Divider(height: 1),
+            itemBuilder: (_, index) => _buildHoldingTile(holdings[index]),
+          ),
+      ],
+    );
+  }
+
   Widget _buildHoldingTile(Holding holding) {
-    final shouldSell = holding.recommendation == 'sell';
+    final actionable = holding.recommendation == 'sell_now' || holding.recommendation == 'take_partial_profit';
     final pnlColor = holding.unrealizedProfitLoss >= 0 ? Colors.green : Colors.red;
 
     return ListTile(
       leading: CircleAvatar(
-        backgroundColor: shouldSell ? Colors.red : Colors.blueGrey,
+        backgroundColor: holding.recommendation == 'sell_now'
+            ? Colors.red
+            : holding.recommendation == 'take_partial_profit'
+                ? Colors.orange
+                : Colors.blueGrey,
         child: Text(
-          shouldSell ? '↓' : '•',
+          holding.recommendation == 'sell_now'
+              ? '↓'
+              : holding.recommendation == 'take_partial_profit'
+                  ? '%'
+                  : '•',
           style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
         ),
       ),
@@ -608,7 +648,7 @@ class _DashboardPageState extends State<DashboardPage> {
         'nu ${holding.currentPrice.toStringAsFixed(2)} | '
         'doel ${holding.targetPrice.toStringAsFixed(2)} | '
         'stop ${holding.stopLossPrice.toStringAsFixed(2)}\n'
-        '${holding.recommendation.toUpperCase()} | ${holding.recommendationReason}',
+        '${holding.recommendationLabel.toUpperCase()} | score ${holding.positionScore.toStringAsFixed(1)} | ${holding.recommendationReason}',
       ),
       isThreeLine: true,
       trailing: Column(
@@ -620,10 +660,10 @@ class _DashboardPageState extends State<DashboardPage> {
             style: TextStyle(color: pnlColor, fontWeight: FontWeight.bold),
           ),
           Text('${holding.unrealizedProfitLossPct.toStringAsFixed(2)}%'),
-          if (shouldSell)
+          if (actionable)
             TextButton(
               onPressed: () => _sellHolding(holding),
-              child: const Text('Verkoop'),
+              child: Text(holding.recommendation == 'take_partial_profit' ? 'Neem winst' : 'Verkoop'),
             ),
         ],
       ),
