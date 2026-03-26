@@ -15,17 +15,28 @@ class DashboardPage extends StatefulWidget {
 class _DashboardPageState extends State<DashboardPage> {
   List<Signal> _signals = [];
   List<Trade> _history = [];
+  Map<String, dynamic>? _learnResult;
+  Map<String, dynamic>? _portfolio;
+
   bool _loadingSignals = false;
   bool _loadingHistory = false;
   bool _loadingLearn = false;
-  Map<String, dynamic>? _learnResult;
+  bool _loadingPortfolio = false;
+
   String? _signalError;
 
   @override
   void initState() {
     super.initState();
-    _refreshSignals();
-    _refreshHistory();
+    _refreshAll();
+  }
+
+  Future<void> _refreshAll() async {
+    await Future.wait([
+      _refreshSignals(),
+      _refreshHistory(),
+      _refreshPortfolio(),
+    ]);
   }
 
   Future<void> _refreshSignals() async {
@@ -35,48 +46,93 @@ class _DashboardPageState extends State<DashboardPage> {
     });
     try {
       final signals = await ApiClient.getSignals();
-      if (mounted) setState(() => _signals = signals);
+      if (mounted) {
+        setState(() => _signals = signals);
+      }
     } catch (e) {
-      if (mounted) setState(() => _signalError = e.toString());
+      if (mounted) {
+        setState(() => _signalError = e.toString());
+      }
     } finally {
-      if (mounted) setState(() => _loadingSignals = false);
+      if (mounted) {
+        setState(() => _loadingSignals = false);
+      }
     }
   }
 
   Future<void> _refreshHistory() async {
+    if (!ApiClient.isLoggedIn()) return;
     setState(() => _loadingHistory = true);
     try {
       final history = await ApiClient.getHistory();
-      if (mounted) setState(() => _history = history);
+      if (mounted) {
+        setState(() => _history = history);
+      }
     } catch (_) {
-      // stil falen — gebruiker kan handmatig vernieuwen
+      // Niet blokkeren; gebruiker kan handmatig vernieuwen.
     } finally {
-      if (mounted) setState(() => _loadingHistory = false);
+      if (mounted) {
+        setState(() => _loadingHistory = false);
+      }
     }
   }
 
-  Future<void> _executeTrade(Signal signal) async {
+  Future<void> _refreshPortfolio() async {
+    if (!ApiClient.isLoggedIn()) return;
+    setState(() => _loadingPortfolio = true);
     try {
-      final trade =
-          await ApiClient.executeTrade(signal.symbol, signal.action, 1000.0);
+      final portfolio = await ApiClient.getPortfolio();
+      if (mounted) {
+        setState(() => _portfolio = portfolio);
+      }
+    } catch (_) {
+      // Niet blokkeren; gebruiker kan handmatig vernieuwen.
+    } finally {
+      if (mounted) {
+        setState(() => _loadingPortfolio = false);
+      }
+    }
+  }
+
+  Future<void> _executePaperTrade(Signal signal) async {
+    if (signal.action == 'hold') {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('HOLD-signaal kan niet worden uitgevoerd.')),
+      );
+      return;
+    }
+
+    final currentBalance = (_portfolio?['current_balance'] as num?)?.toDouble() ?? 2000.0;
+    final suggestedAmount =
+        (currentBalance * (signal.riskPct / 100.0) * 8.0).clamp(100.0, currentBalance * 0.4);
+
+    try {
+      final trade = await ApiClient.executeTrade(
+        signal.symbol,
+        signal.action,
+        suggestedAmount,
+        signal.expectedReturnPct,
+        signal.riskPct,
+      );
+
       if (!mounted) return;
+      final isProfit = trade.profitLoss >= 0;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
-            'Trade: ${trade.symbol} ${trade.action.toUpperCase()} — '
-            'P/L: \$${trade.profitLoss.toStringAsFixed(2)} | ${trade.status}',
+            'Paper trade ${trade.symbol} (${trade.action.toUpperCase()}) | '
+            'P/L: ${trade.profitLoss.toStringAsFixed(2)}',
           ),
-          backgroundColor:
-              trade.profitLoss >= 0 ? Colors.green[700] : Colors.red[700],
-          duration: const Duration(seconds: 4),
+          backgroundColor: isProfit ? Colors.green[700] : Colors.red[700],
         ),
       );
-      _refreshHistory();
+
+      await Future.wait([_refreshHistory(), _refreshPortfolio()]);
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('Fout: $e'),
+          content: Text('Tradefout: $e'),
           backgroundColor: Colors.red[700],
         ),
       );
@@ -102,7 +158,45 @@ class _DashboardPageState extends State<DashboardPage> {
         ),
       );
     } finally {
-      if (mounted) setState(() => _loadingLearn = false);
+      if (mounted) {
+        setState(() => _loadingLearn = false);
+      }
+    }
+  }
+
+  Future<void> _sendRealtimeAlerts() async {
+    try {
+      final result = await ApiClient.sendRealtimeAlerts();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Realtime alerts: ${result.toString()}')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Alertfout: $e'),
+          backgroundColor: Colors.red[700],
+        ),
+      );
+    }
+  }
+
+  Future<void> _sendDailySummary() async {
+    try {
+      final result = await ApiClient.sendDailySummary();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Dagelijkse samenvatting: ${result.toString()}')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Summaryfout: $e'),
+          backgroundColor: Colors.red[700],
+        ),
+      );
     }
   }
 
@@ -110,7 +204,7 @@ class _DashboardPageState extends State<DashboardPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('AI Trading Simulator'),
+        title: const Text('AI Market Advisor'),
         centerTitle: true,
         actions: [
           IconButton(
@@ -127,21 +221,21 @@ class _DashboardPageState extends State<DashboardPage> {
         ],
       ),
       body: RefreshIndicator(
-        onRefresh: () async {
-          await Future.wait([_refreshSignals(), _refreshHistory()]);
-        },
+        onRefresh: _refreshAll,
         child: SingleChildScrollView(
           physics: const AlwaysScrollableScrollPhysics(),
           padding: const EdgeInsets.all(16),
           child: Center(
             child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 900),
+              constraints: const BoxConstraints(maxWidth: 980),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  _buildSignalsCard(),
+                  _buildPortfolioCard(),
                   const SizedBox(height: 20),
-                  _buildLearnCard(),
+                  _buildAdviceCard(),
+                  const SizedBox(height: 20),
+                  _buildActionsCard(),
                   const SizedBox(height: 20),
                   _buildHistoryCard(),
                 ],
@@ -153,9 +247,8 @@ class _DashboardPageState extends State<DashboardPage> {
     );
   }
 
-  // ── Signalen ──────────────────────────────────────────────────────────────
-
-  Widget _buildSignalsCard() {
+  Widget _buildPortfolioCard() {
+    final loggedIn = ApiClient.isLoggedIn();
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(16),
@@ -165,38 +258,67 @@ class _DashboardPageState extends State<DashboardPage> {
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                Text(
-                  'Signalen',
-                  style: Theme.of(context).textTheme.titleLarge,
-                ),
+                Text('Portfolio', style: Theme.of(context).textTheme.titleLarge),
                 IconButton(
                   icon: const Icon(Icons.refresh),
-                  tooltip: 'Vernieuwen',
+                  onPressed: _loadingPortfolio ? null : _refreshPortfolio,
+                ),
+              ],
+            ),
+            const Divider(),
+            if (!loggedIn)
+              const Text('Log in om je portfolio en trade limieten te bekijken.')
+            else if (_loadingPortfolio)
+              const Padding(
+                padding: EdgeInsets.all(12),
+                child: CircularProgressIndicator(),
+              )
+            else if (_portfolio == null)
+              const Text('Portfolio nog niet geladen.')
+            else
+              Wrap(
+                spacing: 20,
+                runSpacing: 8,
+                children: [
+                  Text('Start: €${(_portfolio!['start_balance'] as num).toStringAsFixed(2)}'),
+                  Text('Nu: €${(_portfolio!['current_balance'] as num).toStringAsFixed(2)}'),
+                  Text('P/L: ${(_portfolio!['total_profit_loss'] as num).toStringAsFixed(2)}'),
+                  Text('Trades vandaag: ${_portfolio!['daily_trade_count']} / 10'),
+                ],
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildAdviceCard() {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text('Marktadvies (08:00-16:00)', style: Theme.of(context).textTheme.titleLarge),
+                IconButton(
+                  icon: const Icon(Icons.refresh),
                   onPressed: _loadingSignals ? null : _refreshSignals,
                 ),
               ],
             ),
             const Divider(),
             if (_loadingSignals)
-              const Center(
-                child: Padding(
-                  padding: EdgeInsets.all(24),
-                  child: CircularProgressIndicator(),
-                ),
-              )
-            else if (_signalError != null)
-              Padding(
-                padding: const EdgeInsets.all(12),
-                child: Text(
-                  _signalError!,
-                  style: TextStyle(color: Theme.of(context).colorScheme.error),
-                ),
-              )
-            else if (_signals.isEmpty)
               const Padding(
                 padding: EdgeInsets.all(12),
-                child: Text('Geen signalen beschikbaar.'),
+                child: Center(child: CircularProgressIndicator()),
               )
+            else if (_signalError != null)
+              Text(_signalError!, style: TextStyle(color: Theme.of(context).colorScheme.error))
+            else if (_signals.isEmpty)
+              const Text('Geen adviezen beschikbaar.')
             else
               ListView.separated(
                 shrinkWrap: true,
@@ -212,114 +334,100 @@ class _DashboardPageState extends State<DashboardPage> {
   }
 
   Widget _buildSignalTile(Signal signal) {
-    final isBuy = signal.action == 'buy';
-    final color = isBuy ? Colors.green : Colors.red;
     final loggedIn = ApiClient.isLoggedIn();
+    final actionColor = switch (signal.action) {
+      'buy' => Colors.green,
+      'sell' => Colors.red,
+      _ => Colors.orange,
+    };
+
     return ListTile(
       leading: CircleAvatar(
-        backgroundColor: color,
+        backgroundColor: actionColor,
         child: Text(
-          isBuy ? '↑' : '↓',
+          signal.action == 'buy'
+              ? '↑'
+              : signal.action == 'sell'
+                  ? '↓'
+                  : '•',
           style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
         ),
       ),
       title: Text(
-        '${signal.symbol}  —  \$${signal.price.toStringAsFixed(2)}',
-        style: const TextStyle(fontWeight: FontWeight.w600),
+        '${signal.symbol} (${signal.market.toUpperCase()})  —  '
+        '${signal.action.toUpperCase()} @ ${signal.price.toStringAsFixed(2)}',
       ),
       subtitle: Text(
-        '${signal.action.toUpperCase()}  |  '
-        'Zekerheid: ${(signal.confidence * 100).toStringAsFixed(0)}%',
+        'Verwacht: ${signal.expectedReturnPct.toStringAsFixed(2)}% | '
+        'Risico: ${signal.riskPct.toStringAsFixed(2)}% | '
+        'Zekerheid: ${(signal.confidence * 100).toStringAsFixed(0)}%\n'
+        '${signal.reason}',
       ),
-      trailing: loggedIn
+      isThreeLine: true,
+      trailing: loggedIn && signal.action != 'hold'
           ? FilledButton(
-              style: FilledButton.styleFrom(backgroundColor: color),
-              onPressed: () => _executeTrade(signal),
-              child: const Text('Execute'),
+              style: FilledButton.styleFrom(backgroundColor: actionColor),
+              onPressed: () => _executePaperTrade(signal),
+              child: const Text('Paper trade'),
             )
-          : OutlinedButton(
-              onPressed: () => Navigator.pushReplacement(
-                context,
-                MaterialPageRoute(builder: (_) => const LoginPage()),
-              ),
-              child: const Text('Login om uit te voeren'),
-            ),
+          : const SizedBox.shrink(),
     );
   }
 
-  // ── Leermodule ────────────────────────────────────────────────────────────
-
-  Widget _buildLearnCard() {
+  Widget _buildActionsCard() {
+    final loggedIn = ApiClient.isLoggedIn();
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('AI Leermodule', style: Theme.of(context).textTheme.titleLarge),
+            Text('Leren & Alerts', style: Theme.of(context).textTheme.titleLarge),
             const Divider(),
-            const SizedBox(height: 8),
-            Builder(builder: (_) {
-              if (!ApiClient.isLoggedIn()) {
-                return Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 8),
-                  child: Text('Log in om de leermodule te gebruiken.'),
-                );
-              }
-              return SizedBox(
-                width: double.infinity,
-                child: FilledButton.icon(
-                  icon: _loadingLearn
-                      ? const SizedBox(
-                          width: 18,
-                          height: 18,
-                          child: CircularProgressIndicator(
-                            strokeWidth: 2,
-                            color: Colors.white,
-                          ),
-                        )
-                      : const Icon(Icons.psychology),
-                  label: const Text('Leer van Trades'),
-                  onPressed: _loadingLearn ? null : _learn,
-                ),
-              );
-            }),
+            if (!loggedIn)
+              const Text('Log in om leren en e-mailalerts te gebruiken.')
+            else
+              Wrap(
+                spacing: 12,
+                runSpacing: 12,
+                children: [
+                  FilledButton.icon(
+                    icon: _loadingLearn
+                        ? const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                          )
+                        : const Icon(Icons.psychology),
+                    label: const Text('Leer van markt + trades'),
+                    onPressed: _loadingLearn ? null : _learn,
+                  ),
+                  OutlinedButton.icon(
+                    icon: const Icon(Icons.notifications_active_outlined),
+                    label: const Text('Stuur realtime alerts'),
+                    onPressed: _sendRealtimeAlerts,
+                  ),
+                  OutlinedButton.icon(
+                    icon: const Icon(Icons.summarize_outlined),
+                    label: const Text('Stuur dag samenvatting'),
+                    onPressed: _sendDailySummary,
+                  ),
+                ],
+              ),
             if (_learnResult != null) ...[
-              const SizedBox(height: 16),
+              const SizedBox(height: 14),
               Container(
                 width: double.infinity,
-                padding: const EdgeInsets.all(14),
+                padding: const EdgeInsets.all(12),
                 decoration: BoxDecoration(
                   color: Colors.indigo.withOpacity(0.12),
                   borderRadius: BorderRadius.circular(8),
-                  border: Border.all(color: Colors.indigo.withOpacity(0.3)),
                 ),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      'Leerresultaten',
-                      style: Theme.of(context)
-                          .textTheme
-                          .bodyLarge
-                          ?.copyWith(fontWeight: FontWeight.bold),
-                    ),
-                    const SizedBox(height: 8),
-                    ..._learnResult!.entries.map(
-                      (e) => Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 2),
-                        child: Row(
-                          children: [
-                            Text(
-                              '${e.key}: ',
-                              style: const TextStyle(fontWeight: FontWeight.w500),
-                            ),
-                            Text('${e.value}'),
-                          ],
-                        ),
-                      ),
-                    ),
-                  ],
+                  children: _learnResult!.entries
+                      .map((e) => Text('${e.key}: ${e.value}'))
+                      .toList(),
                 ),
               ),
             ],
@@ -329,9 +437,8 @@ class _DashboardPageState extends State<DashboardPage> {
     );
   }
 
-  // ── Trade Geschiedenis ────────────────────────────────────────────────────
-
   Widget _buildHistoryCard() {
+    final loggedIn = ApiClient.isLoggedIn();
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(16),
@@ -341,35 +448,23 @@ class _DashboardPageState extends State<DashboardPage> {
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                Text(
-                  'Trade Geschiedenis',
-                  style: Theme.of(context).textTheme.titleLarge,
-                ),
+                Text('Paper Trade Geschiedenis', style: Theme.of(context).textTheme.titleLarge),
                 IconButton(
                   icon: const Icon(Icons.refresh),
-                  tooltip: 'Vernieuwen',
                   onPressed: _loadingHistory ? null : _refreshHistory,
                 ),
               ],
             ),
             const Divider(),
-            if (_loadingHistory)
-              const Center(
-                child: Padding(
-                  padding: EdgeInsets.all(24),
-                  child: CircularProgressIndicator(),
-                ),
-              )
-            else if (!ApiClient.isLoggedIn())
+            if (!loggedIn)
+              const Text('Log in om historie te bekijken.')
+            else if (_loadingHistory)
               const Padding(
                 padding: EdgeInsets.all(12),
-                child: Text('Log in om trade geschiedenis te bekijken.'),
+                child: CircularProgressIndicator(),
               )
             else if (_history.isEmpty)
-              const Padding(
-                padding: EdgeInsets.all(12),
-                child: Text('Nog geen trades uitgevoerd.'),
-              )
+              const Text('Nog geen paper trades uitgevoerd.')
             else
               ListView.separated(
                 shrinkWrap: true,
@@ -377,40 +472,33 @@ class _DashboardPageState extends State<DashboardPage> {
                 itemCount: _history.length,
                 separatorBuilder: (_, __) => const Divider(height: 1),
                 itemBuilder: (_, i) {
-                  // Nieuwste bovenaan
                   final trade = _history[_history.length - 1 - i];
-                  return _buildTradeTile(trade);
+                  final isProfit = trade.profitLoss >= 0;
+                  return ListTile(
+                    leading: Icon(
+                      isProfit ? Icons.trending_up : Icons.trending_down,
+                      color: isProfit ? Colors.green : Colors.red,
+                    ),
+                    title: Text(
+                      '${trade.symbol} ${trade.action.toUpperCase()} | '
+                      '€${trade.amount.toStringAsFixed(0)}',
+                    ),
+                    subtitle: Text(
+                      '${trade.timestamp.substring(0, 19).replaceFirst('T', ' ')} | '
+                      'verwacht ${trade.expectedReturnPct.toStringAsFixed(2)}% | '
+                      'risico ${trade.riskPct.toStringAsFixed(2)}% | ${trade.status}',
+                    ),
+                    trailing: Text(
+                      '${isProfit ? '+' : ''}${trade.profitLoss.toStringAsFixed(2)}',
+                      style: TextStyle(
+                        color: isProfit ? Colors.green : Colors.red,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  );
                 },
               ),
           ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildTradeTile(Trade trade) {
-    final isProfit = trade.profitLoss >= 0;
-    final color = isProfit ? Colors.green : Colors.red;
-    final timestamp = trade.timestamp.length >= 19
-        ? trade.timestamp.substring(0, 19).replaceFirst('T', ' ')
-        : trade.timestamp;
-
-    return ListTile(
-      leading: Icon(
-        isProfit ? Icons.trending_up : Icons.trending_down,
-        color: color,
-      ),
-      title: Text(
-        '${trade.symbol}  —  ${trade.action.toUpperCase()}  '
-        '(€${trade.amount.toStringAsFixed(0)})',
-      ),
-      subtitle: Text('$timestamp  |  ${trade.status}'),
-      trailing: Text(
-        '${isProfit ? '+' : ''}\$${trade.profitLoss.toStringAsFixed(2)}',
-        style: TextStyle(
-          color: color,
-          fontWeight: FontWeight.bold,
-          fontSize: 15,
         ),
       ),
     );

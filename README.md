@@ -1,34 +1,56 @@
-# AI Trading Simulator
+# AI Market Advisor (US, EU en Crypto)
 
-Eenvoudige trading-simulator met:
-- FastAPI-backend
-- Flutter Web-frontend
-- login met gebruikersnaam en wachtwoord
-- dummy signals, trades, history en learning
+Deze app geeft marktadvies in plaats van random trades:
+- FastAPI-backend met live gratis data
+- Flutter Web-frontend met adviesdashboard
+- Markten: US stocks, EU stocks en crypto
+- Advies per instrument: `buy/sell/hold`, risico%, verwachte winst%
+- Paper trading met startkapitaal en daglimiet
+- E-mailalerts (realtime + dagoverzicht)
 
-## Login (development en productie)
+## Data bronnen (gratis)
 
-De app gebruikt gebruikersnaam/wachtwoord die via omgevingsvariabelen worden gezet:
+- US/EU stocks: Stooq publieke endpoints
+- Crypto: Binance publieke endpoints
+
+Let op: gratis bronnen zijn prima voor MVP/paper trading, maar minder geschikt voor low-latency productiehandel.
+
+## Watchlist (10)
+
+- US: `AAPL`, `MSFT`, `NVDA`, `AMZN`
+- EU: `ASML`, `SAP`, `SIE`, `BMW`
+- Crypto: `BTC`, `ETH`
+
+## Login en basisinstellingen
+
+Verplicht:
 - `APP_USERNAME`
 - `APP_PASSWORD`
 
-Voor lokale ontwikkeling kun je tijdelijk waarden instellen in je shell, maar zet nooit echte wachtwoorden in de repository.
+Optioneel:
+- `START_BALANCE` (default: `2000`)
+
+## E-mail alerts configuratie
+
+Voor realtime alerts en dagelijkse samenvatting:
+- `SMTP_HOST`
+- `SMTP_PORT` (default `587`)
+- `SMTP_USERNAME`
+- `SMTP_PASSWORD`
+- `ALERT_FROM_EMAIL`
+- `ALERT_TO_EMAIL` (default `gerritpaauw005@gmail.com`)
 
 ## Lokaal starten
 
-### 1. Backend starten
+### 1. Backend
 
 ```bash
 cd backend
 pip install -r requirements.txt
-uvicorn main:app --host 0.0.0.0 --port 8000
+APP_USERNAME=admin APP_PASSWORD=trading123 START_BALANCE=2000 uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
-De backend draait dan op `http://127.0.0.1:8000`.
-
-### 2. Frontend starten
-
-Vereist: Flutter SDK met web support.
+### 2. Frontend
 
 ```bash
 cd frontend
@@ -36,34 +58,42 @@ flutter pub get
 flutter run -d chrome
 ```
 
-De frontend is al ingesteld om lokaal naar `http://127.0.0.1:8000` te praten.
+## Hoe je de app gebruikt
 
-## Gebruiken
+1. Log in met je account.
+2. Bekijk `Marktadvies`: per asset zie je actie, risico% en verwachte winst%.
+3. Klik op `Paper trade` bij een buy/sell advies om de strategie te simuleren.
+4. Volg je resultaat in `Portfolio` en `Paper Trade Geschiedenis`.
+5. Klik op `Leer van markt + trades` om risico- en confidence-inzichten te updaten.
+6. Klik op `Stuur realtime alerts` of `Stuur dag samenvatting` voor e-mailnotificaties.
 
-1. Open de app in de browser.
-2. Log in met de gebruikersnaam en het wachtwoord die je als env-vars hebt ingesteld.
-3. Bekijk de signalen op het dashboard.
-4. Klik op `Execute` om een dummy trade uit te voeren.
-5. Klik op `Leer van Trades` om de learning-agent bij te werken.
-6. Bekijk onderaan de trade history.
+## API endpoints
+
+Publiek:
+- `GET /health`
+- `GET /signals`
+- `GET /advice`
+- `GET /watchlist`
+
+Auth vereist:
+- `POST /login`
+- `POST /trade`
+- `GET /history`
+- `GET /portfolio`
+- `POST /learn`
+- `POST /alerts/realtime`
+- `POST /alerts/summary`
 
 ## Deployment
 
 ### Backend op Render
 
 - Root directory: `backend`
-- Build command: `pip install -r requirements.txt`
-- Start command: `uvicorn main:app --host 0.0.0.0 --port 8000`
-- Environment variables:
-	- `APP_USERNAME`
-	- `APP_PASSWORD`
+- Build: `pip install -r requirements.txt`
+- Start: `uvicorn main:app --host 0.0.0.0 --port 8000`
+- Zet minimaal `APP_USERNAME` en `APP_PASSWORD`
 
 ### Frontend op GitHub Pages
 
-De workflow staat in `.github/workflows/deploy.yml`.
-Voor productie hoef je `frontend/lib/api_client.dart` niet handmatig te wijzigen.
-Zet in GitHub onder `Settings > Secrets and variables > Actions > Variables` een repository variable:
-
-- `BACKEND_URL` = je publieke backend-URL
-
-Daarna bouwt de workflow de frontend automatisch met die backend-URL.
+Gebruik `.github/workflows/deploy.yml` en zet repository variable:
+- `BACKEND_URL` = publieke backend-URL

@@ -5,6 +5,8 @@ class TradeRequest(BaseModel):
     symbol: str
     action: str  # "buy" of "sell"
     amount: float
+    expected_return_pct: float = 0.0
+    risk_pct: float = 0.0
 
 
 class TradeResult(BaseModel):
@@ -15,3 +17,5 @@ class TradeResult(BaseModel):
     profit_loss: float
     timestamp: str
     status: str
+    expected_return_pct: float = 0.0
+    risk_pct: float = 0.0

@@ -10,8 +10,8 @@ def execute_trade(
     request: TradeRequest, limits: dict, data_service: DataService
 ) -> TradeResult:
     """
-    Voert een gesimuleerde trade uit en controleert de ingestelde limieten.
-    Genereert een willekeurige winst/verlies (dummy).
+    Voert een paper trade uit op basis van het gegenereerde advies.
+    Gebruikt expected_return_pct en risk_pct als input voor P/L-simulatie.
     """
     now = datetime.now(timezone.utc).isoformat()
 
@@ -25,6 +25,8 @@ def execute_trade(
             profit_loss=0.0,
             timestamp=now,
             status="rejected: dagelijks maximum bereikt",
+            expected_return_pct=request.expected_return_pct,
+            risk_pct=request.risk_pct,
         )
 
     # Limiet: max positiegrootte
@@ -37,11 +39,21 @@ def execute_trade(
             profit_loss=0.0,
             timestamp=now,
             status="rejected: positie te groot",
+            expected_return_pct=request.expected_return_pct,
+            risk_pct=request.risk_pct,
         )
 
-    # Gesimuleerde winst/verlies op basis van max_risk
-    max_loss = request.amount * limits["max_risk"]
-    profit_loss = round(random.uniform(-max_loss, max_loss * 3.0), 2)
+    # Simuleer gerealiseerd rendement rond het verwachte rendement.
+    expected = max(0.0, request.expected_return_pct)
+    risk_pct = max(0.1, request.risk_pct)
+    edge_pct = expected
+    realized_pct = (edge_pct * random.uniform(0.5, 1.35)) - (risk_pct * random.uniform(0.15, 0.75))
+
+    # Kleine kans op afwijkende uitkomst om marktruis te simuleren.
+    if random.random() < 0.18:
+        realized_pct = -abs(realized_pct) * random.uniform(0.4, 1.1)
+
+    profit_loss = round(request.amount * (realized_pct / 100.0), 2)
 
     result = TradeResult(
         id=str(uuid.uuid4()),
@@ -51,6 +63,8 @@ def execute_trade(
         profit_loss=profit_loss,
         timestamp=now,
         status="executed",
+        expected_return_pct=request.expected_return_pct,
+        risk_pct=request.risk_pct,
     )
     data_service.add_trade(result)
     return result

@@ -32,7 +32,7 @@ class ApiClient {
   static bool isLoggedIn() => _token != null;
 
   static Future<List<Signal>> getSignals() async {
-    final response = await http.get(Uri.parse('$kBackendUrl/signals'), headers: _headers());
+    final response = await http.get(Uri.parse('$kBackendUrl/advice'), headers: _headers());
     if (response.statusCode != 200) {
       throw Exception('Fout bij ophalen signalen (${response.statusCode})');
     }
@@ -46,6 +46,8 @@ class ApiClient {
     String symbol,
     String action,
     double amount,
+    double expectedReturnPct,
+    double riskPct,
   ) async {
     final response = await http.post(
       Uri.parse('$kBackendUrl/trade'),
@@ -54,6 +56,8 @@ class ApiClient {
         'symbol': symbol,
         'action': action,
         'amount': amount,
+        'expected_return_pct': expectedReturnPct,
+        'risk_pct': riskPct,
       }),
     );
     if (response.statusCode != 200) {
@@ -77,6 +81,30 @@ class ApiClient {
     final response = await http.post(Uri.parse('$kBackendUrl/learn'), headers: _headers());
     if (response.statusCode != 200) {
       throw Exception('Fout bij leren (${response.statusCode})');
+    }
+    return jsonDecode(response.body) as Map<String, dynamic>;
+  }
+
+  static Future<Map<String, dynamic>> getPortfolio() async {
+    final response = await http.get(Uri.parse('$kBackendUrl/portfolio'), headers: _headers());
+    if (response.statusCode != 200) {
+      throw Exception('Fout bij ophalen portfolio (${response.statusCode})');
+    }
+    return jsonDecode(response.body) as Map<String, dynamic>;
+  }
+
+  static Future<Map<String, dynamic>> sendRealtimeAlerts() async {
+    final response = await http.post(Uri.parse('$kBackendUrl/alerts/realtime'), headers: _headers());
+    if (response.statusCode != 200) {
+      throw Exception('Fout bij versturen realtime alerts (${response.statusCode})');
+    }
+    return jsonDecode(response.body) as Map<String, dynamic>;
+  }
+
+  static Future<Map<String, dynamic>> sendDailySummary() async {
+    final response = await http.post(Uri.parse('$kBackendUrl/alerts/summary'), headers: _headers());
+    if (response.statusCode != 200) {
+      throw Exception('Fout bij versturen dag samenvatting (${response.statusCode})');
     }
     return jsonDecode(response.body) as Map<String, dynamic>;
   }
