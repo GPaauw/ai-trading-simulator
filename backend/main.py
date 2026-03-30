@@ -64,20 +64,16 @@ def health() -> Dict[str, str]:
 def get_signals() -> List[Signal]:
     """Publiek endpoint: retourneert de 10 beste koopadviezen.
 
-    Invalideert snapshot-cache zodat verse data wordt opgehaald bij elke refresh.
+    Gebruikt de bestaande TTL-cache zodat niet elke page refresh een volledige markt-scan triggert.
     """
-    market_data_service.invalidate_cache()
-    advice_engine.invalidate_signal_cache()
-    buy_signals = advice_engine.build_ranked_buy_signals(force_refresh=True)
+    buy_signals = advice_engine.build_ranked_buy_signals()
     return buy_signals[:10]
 
 
 @app.get("/signals/longterm", response_model=List[Signal])
 def get_longterm_signals() -> List[Signal]:
     """Top 10 langetermijn koop-signalen (multi-day horizon)."""
-    market_data_service.invalidate_cache()
-    advice_engine.invalidate_signal_cache()
-    longterm = advice_engine.build_ranked_longterm_signals(force_refresh=True)
+    longterm = advice_engine.build_ranked_longterm_signals()
     return longterm[:10]
 
 

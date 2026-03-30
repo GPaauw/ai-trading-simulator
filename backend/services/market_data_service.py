@@ -1,5 +1,7 @@
+import gc
 import json
 import logging
+import os
 import re
 import time
 import threading
@@ -51,7 +53,7 @@ class MarketDataService:
     ]
 
     # Batch-grootte voor yfinance downloads
-    _YF_BATCH_SIZE = 50
+    _DEFAULT_YF_BATCH_SIZE = 15
 
     def __init__(self) -> None:
         self._cache: Dict[str, Dict[str, object]] = {}
@@ -112,6 +114,9 @@ class MarketDataService:
         if not force and self._stock_data_loaded and (now - self._stock_data_time) < self._stock_data_ttl:
             return
 
+        batch_size = self._get_yf_batch_size()
+        use_yf_threads = self._use_yf_threads()
+
         watchlist = self.get_watchlist()
         non_crypto = [inst for inst in watchlist if inst["market"] != "crypto"]
         if not non_crypto:
@@ -128,25 +133,31 @@ class MarketDataService:
         logger.info("Batch-download %d instrumenten via yfinance...", len(yf_syms))
         start = time.time()
 
-        # Download in batches van _YF_BATCH_SIZE
-        for i in range(0, len(yf_syms), self._YF_BATCH_SIZE):
-            batch = yf_syms[i : i + self._YF_BATCH_SIZE]
+        # Download in kleinere batches om memory-pieken op kleine instances te voorkomen.
+        for i in range(0, len(yf_syms), batch_size):
+            batch = yf_syms[i : i + batch_size]
             try:
                 if len(batch) == 1:
                     data = yf.download(batch[0], period="6mo", progress=False)
                     if data.empty:
+                        del data
+                        gc.collect()
                         continue
                     close_col = data["Close"].dropna()
                     closes = list(close_col.values.flatten())
                     if len(closes) >= 30:
                         last_row = data.iloc[-1]
                         self._cache_stock(yf_to_display[batch[0]], closes, last_row)
+                    del data
+                    gc.collect()
                 else:
                     data = yf.download(
                         batch, period="6mo", group_by="ticker",
-                        threads=True, progress=False,
+                        threads=use_yf_threads, progress=False,
                     )
                     if data.empty:
+                        del data
+                        gc.collect()
                         continue
                     for yf_sym in batch:
                         try:
@@ -158,6 +169,8 @@ class MarketDataService:
                                 self._cache_stock(yf_to_display[yf_sym], closes, last_row)
                         except (KeyError, IndexError):
                             continue
+                    del data
+                    gc.collect()
             except Exception as exc:
                 logger.warning("Batch-download fout voor %s: %s", batch[:3], exc)
 
@@ -166,6 +179,18 @@ class MarketDataService:
         logger.info("Data geladen: %d/%d instrumenten in %.1fs", cached_count, len(yf_syms), elapsed)
         self._stock_data_loaded = True
         self._stock_data_time = time.time()
+
+    def _get_yf_batch_size(self) -> int:
+        raw_value = os.environ.get("PREFETCH_BATCH_SIZE", str(self._DEFAULT_YF_BATCH_SIZE)).strip()
+        try:
+            batch_size = int(raw_value)
+        except ValueError:
+            batch_size = self._DEFAULT_YF_BATCH_SIZE
+        return max(1, min(batch_size, 50))
+
+    def _use_yf_threads(self) -> bool:
+        raw_value = os.environ.get("PREFETCH_YF_THREADS", "false").strip().lower()
+        return raw_value in {"1", "true", "yes"}
 
     def _cache_stock(self, symbol: str, closes: List[float], last_row) -> None:
         """Sla stock-data op in cache."""

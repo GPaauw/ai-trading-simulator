@@ -1,4 +1,5 @@
 import statistics
+import os
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -10,8 +11,18 @@ from models.holding import HoldingView
 from models.signal import Signal
 from services.market_data_service import MarketDataService
 
-# Maximaal aantal parallelle API-verzoeken
-_MAX_WORKERS = 25
+
+def _get_max_workers() -> int:
+    raw_value = os.environ.get("ADVICE_MAX_WORKERS", "8").strip()
+    try:
+        worker_count = int(raw_value)
+    except ValueError:
+        worker_count = 8
+    return max(2, min(worker_count, 25))
+
+
+# Maximaal aantal parallelle analyses; lagere default voorkomt memory-pieken op kleine hosts.
+_MAX_WORKERS = _get_max_workers()
 # Signaal-cache TTL in seconden (5 minuten)
 _SIGNAL_CACHE_TTL = 5 * 60
 

@@ -18,3 +18,12 @@ services:
       - key: PREFETCH_ON_STARTUP
         # Zet op 'true' om bij startup te prefetchen; default 'false' vermindert memory gebruik
         value: "false"
+      - key: PREFETCH_BATCH_SIZE
+        # Kleinere batch verlaagt RAM-pieken tijdens yfinance-downloads
+        value: "15"
+      - key: PREFETCH_YF_THREADS
+        # yfinance threading uit op kleine Render-instances om geheugendruk te verlagen
+        value: "false"
+      - key: ADVICE_MAX_WORKERS
+        # Minder parallelle analyse-taken voorkomt thread- en memory-pieken
+        value: "8"
