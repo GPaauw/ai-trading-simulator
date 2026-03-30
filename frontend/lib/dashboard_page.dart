@@ -247,6 +247,58 @@ class _DashboardPageState extends State<DashboardPage> {
     }
   }
 
+  Future<void> _sellAll() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Alle posities verkopen'),
+        content: const Text(
+          'Einde dag: wil je alle open posities sluiten?\n'
+          'Dit verkoopt alles tegen de huidige marktprijs.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('Annuleren'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Colors.red),
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('Verkoop alles'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true) return;
+
+    try {
+      final result = await ApiClient.sellAll();
+      if (!mounted) return;
+      final sold = result['sold'] as int;
+      final pl = (result['total_profit_loss'] as num).toDouble();
+      final isProfit = pl >= 0;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            '$sold posities verkocht | '
+            'Totaal P/L: €${pl.toStringAsFixed(2)}',
+          ),
+          backgroundColor: isProfit ? Colors.green[700] : Colors.red[700],
+        ),
+      );
+      await Future.wait([_refreshHistory(), _refreshPortfolio(), _refreshHoldings()]);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Fout bij verkopen: $e'),
+          backgroundColor: Colors.red[700],
+        ),
+      );
+    }
+  }
+
   Future<void> _sellHolding(Holding holding) async {
     final defaultQuantity = holding.suggestedSellFraction > 0
         ? holding.quantity * holding.suggestedSellFraction
@@ -457,7 +509,7 @@ class _DashboardPageState extends State<DashboardPage> {
                   Text('Marktwaarde: €${(_portfolio!['market_value'] as num).toStringAsFixed(2)}'),
                   Text('P/L: ${(_portfolio!['total_profit_loss'] as num).toStringAsFixed(2)}'),
                   Text('Posities: ${_portfolio!['holdings_count']}'),
-                  Text('Trades vandaag: ${_portfolio!['daily_trade_count']} / 10'),
+                  Text('Trades vandaag: ${_portfolio!['daily_trade_count']} / 50'),
                 ],
               ),
           ],
@@ -480,9 +532,22 @@ class _DashboardPageState extends State<DashboardPage> {
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
                 Text('Verkoopadvies voor jouw posities', style: Theme.of(context).textTheme.titleLarge),
-                IconButton(
-                  icon: const Icon(Icons.refresh),
-                  onPressed: _loadingHoldings ? null : _refreshHoldings,
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (_holdings.isNotEmpty)
+                      FilledButton.icon(
+                        style: FilledButton.styleFrom(backgroundColor: Colors.red),
+                        icon: const Icon(Icons.sell, size: 18),
+                        label: const Text('Verkoop alles'),
+                        onPressed: _sellAll,
+                      ),
+                    const SizedBox(width: 8),
+                    IconButton(
+                      icon: const Icon(Icons.refresh),
+                      onPressed: _loadingHoldings ? null : _refreshHoldings,
+                    ),
+                  ],
                 ),
               ],
             ),
@@ -519,7 +584,7 @@ class _DashboardPageState extends State<DashboardPage> {
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                Text('Koopadvies uit de markt', style: Theme.of(context).textTheme.titleLarge),
+                Text('Daytrades — koop vandaag, verkoop vandaag', style: Theme.of(context).textTheme.titleLarge),
                 IconButton(
                   icon: const Icon(Icons.refresh),
                   onPressed: _loadingSignals ? null : _refreshSignals,
@@ -535,7 +600,7 @@ class _DashboardPageState extends State<DashboardPage> {
             else if (_signalError != null)
               Text(_signalError!, style: TextStyle(color: Theme.of(context).colorScheme.error))
             else if (_signals.isEmpty)
-              const Text('Er zijn nu geen koopkansen volgens het model.')
+              const Text('Er zijn nu geen daytrade-kansen volgens het model.')
             else ...[
               _buildSignalSection('Aandelen', stockSignals),
               const SizedBox(height: 16),
@@ -554,7 +619,7 @@ class _DashboardPageState extends State<DashboardPage> {
         Text(title, style: Theme.of(context).textTheme.titleMedium),
         const SizedBox(height: 8),
         if (signals.isEmpty)
-          Text('Geen koopadvies beschikbaar voor $title.')
+          Text('Geen daytrades beschikbaar voor $title.')
         else
           ListView.separated(
             shrinkWrap: true,
@@ -571,12 +636,6 @@ class _DashboardPageState extends State<DashboardPage> {
     final loggedIn = ApiClient.isLoggedIn();
     const actionColor = Colors.green;
 
-    final timeLabel = signal.expectedDays <= 3
-        ? '~${signal.expectedDays}d (kort)'
-        : signal.expectedDays <= 14
-            ? '~${signal.expectedDays}d (middellang)'
-            : '~${signal.expectedDays}d (lang)';
-
     return ListTile(
       leading: CircleAvatar(
         backgroundColor: actionColor,
@@ -587,13 +646,13 @@ class _DashboardPageState extends State<DashboardPage> {
         'BUY @ ${signal.price.toStringAsFixed(2)}',
       ),
       subtitle: Text(
-        '${signal.rankLabel.isEmpty ? 'Koopkans' : signal.rankLabel} | '
+        '${signal.rankLabel.isEmpty ? 'Daytrade' : signal.rankLabel} | '
         'score ${signal.rankingScore.toStringAsFixed(1)}\n'
         'Verwacht: +${signal.expectedReturnPct.toStringAsFixed(2)}% → '
         'doel €${signal.targetPrice.toStringAsFixed(2)} | '
         'winst ~€${signal.expectedProfit.toStringAsFixed(0)} per €1000 | '
-        '$timeLabel\n'
-        'Risico: ${signal.riskPct.toStringAsFixed(2)}% | '
+        'vandaag (daytrade)\n'
+        'Stop-loss: ${signal.riskPct.toStringAsFixed(2)}% | '
         'Zekerheid: ${(signal.confidence * 100).toStringAsFixed(0)}%',
       ),
       isThreeLine: true,

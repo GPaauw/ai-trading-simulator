@@ -138,6 +138,14 @@ class ApiClient {
     return jsonDecode(response.body) as Map<String, dynamic>;
   }
 
+  static Future<Map<String, dynamic>> sellAll() async {
+    final response = await http.post(Uri.parse('$kBackendUrl/sell-all'), headers: _headers());
+    if (response.statusCode != 200) {
+      throw Exception(_extractDetail(response.body, 'Fout bij verkopen alle posities (${response.statusCode})'));
+    }
+    return jsonDecode(response.body) as Map<String, dynamic>;
+  }
+
   static String _extractDetail(String body, String fallback) {
     try {
       final map = jsonDecode(body) as Map<String, dynamic>;

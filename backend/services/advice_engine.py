@@ -112,8 +112,17 @@ class AdviceEngine:
         position_score = _clamp((confidence * 100) + unrealized_profit_loss_pct - (risk_pct * 4.5), 0.0, 100.0)
 
         recommendation = "hold"
-        reason = "Positie monitoren; nog geen verkooptrigger geraakt."
-        if current_price <= stop_loss_price:
+        reason = "Positie monitoren; dag nog niet voorbij."
+
+        # Day-trading: verkoop ALTIJD aan einde van de dag
+        end_of_day = _is_end_of_day(str(holding["market"]))
+        if end_of_day:
+            recommendation = "sell_now"
+            recommendation_label = "Verkoop nu (einde dag)"
+            suggested_action = "sell"
+            suggested_sell_fraction = 1.0
+            reason = "Einde handelsdag: sluit alle posities af (day-trading strategie)."
+        elif current_price <= stop_loss_price:
             recommendation = "sell_now"
             recommendation_label = "Verkoop nu"
             suggested_action = "sell"
@@ -243,17 +252,17 @@ class AdviceEngine:
         elif volume_ratio > 1.5 and score < 0:
             score -= 0.5 * p["volume_weight"]
 
-        # ------ Actie bepalen ------
+        # ------ Actie bepalen (day-trading: intraday focus) ------
         expected_move_pct = _clamp(
             (score * 0.38) + (momentum_pct * p["momentum_weight"]),
-            -5.0,
-            5.0,
+            -2.0,
+            2.0,
         )
 
         market_open = _is_market_open(instrument["market"])
-        if expected_move_pct > 0.25:
+        if expected_move_pct > 0.15:
             action = "buy"
-        elif expected_move_pct < -0.25:
+        elif expected_move_pct < -0.15:
             action = "sell"
         else:
             action = "hold"
@@ -274,13 +283,15 @@ class AdviceEngine:
         )
 
         market_risk_bias = 0.30 if instrument["market"] == "crypto" else 0.0
+        # Day-trading: strakke stop-loss (max 1%)
         risk_pct = _clamp(
-            (1.4 - (volatility_pct * 0.06) + market_risk_bias) * p["risk_multiplier"],
-            0.3,
-            3.0,
+            (0.6 - (volatility_pct * 0.03) + market_risk_bias) * p["risk_multiplier"],
+            0.2,
+            1.0,
         )
 
-        expected_trade_return_pct = abs(expected_move_pct)
+        # Day-trading: verwachte winst is intraday (0.2-2%)
+        expected_trade_return_pct = _clamp(abs(expected_move_pct), 0.0, 2.0)
 
         # ------ Ranking score (0-100, genuanceerd) ------
         ranking_score = _clamp(
@@ -307,20 +318,11 @@ class AdviceEngine:
             else:
                 rank_label = "Interessante kans"
 
-        # ------ Koersdoel & tijdshorizon ------
+        # ------ Koersdoel & tijdshorizon (day-trading: altijd 1 dag) ------
         target_price = round(price * (1 + expected_trade_return_pct / 100), 4)
-        avg_daily_move_pct = max(abs(momentum_pct) / 20, 0.02)
-        expected_days = max(1, round(expected_trade_return_pct / avg_daily_move_pct))
-        if instrument["market"] == "crypto":
-            expected_days = max(1, round(expected_days * 0.5))
+        expected_days = 1  # day-trading: koop ochtend, verkoop einde dag
         expected_profit = round(1000 * expected_trade_return_pct / 100, 2)
-
-        if expected_days <= 3:
-            time_label = f"~{expected_days}d (kort)"
-        elif expected_days <= 14:
-            time_label = f"~{expected_days}d (middellang)"
-        else:
-            time_label = f"~{expected_days}d (lang)"
+        time_label = "vandaag (daytrade)"
 
         # Reden met alle indicators
         reason = (
@@ -357,7 +359,18 @@ def _is_market_open(market: str) -> bool:
     if market == "crypto":
         return True
     now = datetime.now(ZoneInfo("Europe/Amsterdam"))
-    return 8 <= now.hour < 16
+    # US markt: 15:30-22:00 NL tijd
+    return (now.hour == 15 and now.minute >= 30) or (16 <= now.hour < 22)
+
+
+def _is_end_of_day(market: str) -> bool:
+    """Check of het bijna einde handelsdag is."""
+    now = datetime.now(ZoneInfo("Europe/Amsterdam"))
+    if market == "crypto":
+        # Crypto: sluit elke 'dag' om 23:00 NL tijd
+        return now.hour >= 22
+    # US markt sluit om 22:00 NL tijd
+    return now.hour >= 21 and now.minute >= 30
 
 
 def _sma(values: list[float], period: int) -> float:

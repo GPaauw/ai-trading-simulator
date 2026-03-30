@@ -31,11 +31,11 @@ market_data_service = MarketDataService()
 advice_engine = AdviceEngine(market_data_service)
 alert_service = AlertService(data_service)
 
-# Limieten (aanpasbaar)
+# Limieten (day-trading)
 LIMITS = {
     "max_position": 10_000.0,
-    "max_risk": 0.02,
-    "max_trades_per_day": 10,
+    "max_risk": 0.01,
+    "max_trades_per_day": 50,
 }
 
 
@@ -101,6 +101,49 @@ def get_holdings() -> List[HoldingView]:
 @app.get("/sell-advice", dependencies=[Depends(verify_token)], response_model=List[HoldingView])
 def get_sell_advice() -> List[HoldingView]:
     return _build_sell_advice()
+
+
+@app.post("/sell-all", dependencies=[Depends(verify_token)])
+def sell_all_positions() -> Dict[str, Any]:
+    """Day-trading: verkoop alle open posities aan einde van de dag."""
+    holdings = data_service.get_holdings()
+    if not holdings:
+        return {"sold": 0, "total_profit_loss": 0.0, "results": []}
+
+    results: List[Dict[str, Any]] = []
+    total_pl = 0.0
+    for holding in holdings:
+        symbol = str(holding["symbol"])
+        market = str(holding["market"])
+        quantity = float(holding["quantity"])
+        try:
+            instrument = market_data_service.get_instrument(symbol, market)
+            live_price = float(market_data_service.get_snapshot(instrument)["price"])
+        except Exception:
+            live_price = float(holding["avg_entry_price"])
+
+        sell_request = TradeRequest(
+            symbol=symbol,
+            market=market,
+            action="sell",
+            amount=0.0,
+            quantity=quantity,
+        )
+        result = run_trade(sell_request, LIMITS, data_service, market_data_service)
+        results.append({
+            "symbol": symbol,
+            "quantity": round(quantity, 6),
+            "price": round(live_price, 4),
+            "profit_loss": result.profit_loss,
+            "status": result.status,
+        })
+        total_pl += result.profit_loss
+
+    return {
+        "sold": len(results),
+        "total_profit_loss": round(total_pl, 2),
+        "results": results,
+    }
 
 
 @app.post("/learn", dependencies=[Depends(verify_token)])
