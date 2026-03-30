@@ -571,6 +571,12 @@ class _DashboardPageState extends State<DashboardPage> {
     final loggedIn = ApiClient.isLoggedIn();
     const actionColor = Colors.green;
 
+    final timeLabel = signal.expectedDays <= 3
+        ? '~${signal.expectedDays}d (kort)'
+        : signal.expectedDays <= 14
+            ? '~${signal.expectedDays}d (middellang)'
+            : '~${signal.expectedDays}d (lang)';
+
     return ListTile(
       leading: CircleAvatar(
         backgroundColor: actionColor,
@@ -583,10 +589,12 @@ class _DashboardPageState extends State<DashboardPage> {
       subtitle: Text(
         '${signal.rankLabel.isEmpty ? 'Koopkans' : signal.rankLabel} | '
         'score ${signal.rankingScore.toStringAsFixed(1)}\n'
-        'Verwacht: ${signal.expectedReturnPct.toStringAsFixed(2)}% | '
+        'Verwacht: +${signal.expectedReturnPct.toStringAsFixed(2)}% → '
+        'doel €${signal.targetPrice.toStringAsFixed(2)} | '
+        'winst ~€${signal.expectedProfit.toStringAsFixed(0)} per €1000 | '
+        '$timeLabel\n'
         'Risico: ${signal.riskPct.toStringAsFixed(2)}% | '
-        'Zekerheid: ${(signal.confidence * 100).toStringAsFixed(0)}%\n'
-        '${signal.reason}',
+        'Zekerheid: ${(signal.confidence * 100).toStringAsFixed(0)}%',
       ),
       isThreeLine: true,
       trailing: loggedIn

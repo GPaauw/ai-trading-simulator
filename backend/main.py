@@ -1,5 +1,4 @@
 from typing import Any, Dict, List
-import random
 
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -47,21 +46,11 @@ def health() -> Dict[str, str]:
 
 @app.get("/signals", response_model=List[Signal])
 def get_signals() -> List[Signal]:
-    """Publiek endpoint: retourneert maximaal 10 koopadviezen.
-
-    Om vernieuwing bij refresh te krijgen, kiezen we elke request een willekeurige
-    subset van koopadviezen (indien beschikbaar)."""
+    """Publiek endpoint: retourneert de 10 beste koopadviezen, gesorteerd op score."""
     buy_signals = advice_engine.build_ranked_buy_signals()
     if not buy_signals:
-        # Fallback: retourneer algemene signalen als er geen buy-signalen zijn
         return advice_engine.build_signals()
-
-    count = 10
-    if len(buy_signals) <= count:
-        return buy_signals
-
-    # Kies op elk request een willekeurige subset van koopadviezen
-    return random.sample(buy_signals, count)
+    return buy_signals[:10]
 
 
 @app.get("/advice", response_model=List[Signal])

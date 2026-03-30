@@ -182,9 +182,29 @@ class AdviceEngine:
             else:
                 rank_label = "Interessante kans"
 
+        # Tijdshorizon & koersdoel berekenen
+        target_price = round(price * (1 + expected_trade_return_pct / 100), 4)
+
+        # Schat de dagen tot koersdoel o.b.v. dagelijks momentum
+        avg_daily_move_pct = max(abs(momentum_pct) / 20, 0.02)  # minimaal 0.02% per dag
+        expected_days = max(1, round(expected_trade_return_pct / avg_daily_move_pct))
+        if instrument["market"] == "crypto":
+            expected_days = max(1, round(expected_days * 0.6))  # crypto beweegt sneller
+
+        # Verwachte winst bij €1000 investering
+        expected_profit = round(1000 * expected_trade_return_pct / 100, 2)
+
+        if expected_days <= 3:
+            time_label = f"~{expected_days}d (kort)"
+        elif expected_days <= 14:
+            time_label = f"~{expected_days}d (middellang)"
+        else:
+            time_label = f"~{expected_days}d (lang)"
+
         reason = (
             f"SMA5/SMA20={sma_short:.2f}/{sma_long:.2f}, RSI={rsi:.1f}, "
-            f"momentum={momentum_pct:.2f}%, vol={volatility_pct:.2f}%"
+            f"momentum={momentum_pct:.2f}%, vol={volatility_pct:.2f}% | "
+            f"doel €{target_price:.2f} in {time_label}"
         )
 
         return Signal(
@@ -196,6 +216,9 @@ class AdviceEngine:
             price=round(price, 4),
             risk_pct=round(risk_pct, 3),
             expected_return_pct=round(expected_trade_return_pct, 3),
+            target_price=target_price,
+            expected_profit=expected_profit,
+            expected_days=expected_days,
             ranking_score=round(ranking_score, 3),
             rank_label=rank_label,
             reason=reason,
