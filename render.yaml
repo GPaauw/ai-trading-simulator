@@ -29,4 +29,4 @@ services:
         value: "8"
       - key: GROQ_API_KEY
         # Gratis API key van https://console.groq.com voor AI-analyse
-        value: ""
+        sync: false

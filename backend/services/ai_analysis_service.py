@@ -8,15 +8,18 @@ Fallback: als GROQ_API_KEY ontbreekt worden technische signalen ongewijzigd door
 import json
 import logging
 import os
+import re
 import time
 from typing import Dict, List, Optional
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 logger = logging.getLogger(__name__)
 
 _GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
-_MODEL = "llama-3.1-8b-instant"
+_MODEL = os.environ.get("GROQ_MODEL", "llama-3.1-8b-instant")
 _CACHE_TTL = 5 * 60  # 5 minuten
+_REQUEST_TIMEOUT_SECONDS = 30
 
 
 class AiAnalysisService:
@@ -117,8 +120,8 @@ class AiAnalysisService:
 
         api_key = self._get_api_key()
         if not api_key:
-            # Fallback: geef technische signalen terug met lege AI-velden
-            return self._add_empty_ai_fields(signals)
+            logger.warning("GROQ_API_KEY ontbreekt; technische fallback wordt gebruikt.")
+            return self._build_fallback_signals(signals, "AI-key ontbreekt; technische analyse wordt gebruikt.")
 
         # Cache check
         cache_key = self._make_cache_key(signals, market_filter)
@@ -137,7 +140,7 @@ class AiAnalysisService:
             return results
         except Exception as exc:
             logger.error("Groq AI-analyse mislukt: %s", exc)
-            return self._add_empty_ai_fields(signals)
+            return self._build_fallback_signals(signals, "AI-analyse tijdelijk niet beschikbaar; technische analyse wordt gebruikt.")
 
     def _build_prompt(self, signals: List[Dict]) -> str:
         """Bouw prompt met marktdata + lessen uit eerdere trades."""
@@ -175,20 +178,22 @@ class AiAnalysisService:
             "- Geef een koersdoel (target_price) en verwacht rendement in %\n"
             f"{lessons_block}\n"
             f"MARKTDATA:\n{data_text}\n\n"
-            "Antwoord ALLEEN in geldig JSON als een array van objecten met EXACT deze velden:\n"
-            '[\n'
-            '  {\n'
-            '    "symbol": "AAPL",\n'
-            '    "action": "buy",\n'
-            '    "ai_score": 85,\n'
-            '    "ai_analysis": "Sterke technische setup met...",\n'
-            '    "ai_risk": "Risico op...",\n'
-            '    "target_price": 155.50,\n'
-            '    "expected_return_pct": 2.5,\n'
-            '    "confidence": 0.82\n'
-            '  }\n'
-            ']\n'
-            "Geen extra tekst buiten de JSON array. Sorteer op ai_score (hoogste eerst)."
+            "Antwoord ALLEEN in geldig JSON als een object met sleutel \"analyses\" en daarin een array:\n"
+            '{\n'
+            '  "analyses": [\n'
+            '    {\n'
+            '      "symbol": "AAPL",\n'
+            '      "action": "buy",\n'
+            '      "ai_score": 85,\n'
+            '      "ai_analysis": "Sterke technische setup met...",\n'
+            '      "ai_risk": "Risico op...",\n'
+            '      "target_price": 155.50,\n'
+            '      "expected_return_pct": 2.5,\n'
+            '      "confidence": 0.82\n'
+            '    }\n'
+            '  ]\n'
+            '}\n'
+            "Geen extra tekst buiten het JSON object. Sorteer analyses op ai_score (hoogste eerst)."
         )
 
     # ------------------------------------------------------------------
@@ -209,6 +214,7 @@ class AiAnalysisService:
                 },
                 {"role": "user", "content": prompt},
             ],
+            "response_format": {"type": "json_object"},
             "temperature": 0.3,
             "max_tokens": 2000,
         }).encode("utf-8")
@@ -219,13 +225,22 @@ class AiAnalysisService:
             headers={
                 "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json",
+                "User-Agent": "ai-trading-simulator/1.0",
             },
             method="POST",
         )
 
-        with urlopen(req, timeout=20) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-            return data["choices"][0]["message"]["content"]
+        try:
+            with urlopen(req, timeout=_REQUEST_TIMEOUT_SECONDS) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                return data["choices"][0]["message"]["content"]
+        except HTTPError as exc:
+            error_body = exc.read().decode("utf-8", errors="replace")
+            logger.error("Groq HTTP-fout %s: %s", exc.code, error_body)
+            raise RuntimeError(f"Groq HTTP-fout {exc.code}") from exc
+        except URLError as exc:
+            logger.error("Groq netwerkfout: %s", exc)
+            raise RuntimeError("Groq netwerkfout") from exc
 
     # ------------------------------------------------------------------
     # Response parsing
@@ -233,21 +248,23 @@ class AiAnalysisService:
 
     def _parse_response(self, raw: str, original_signals: List[Dict]) -> List[Dict]:
         """Parse Groq JSON en merge AI-analyse met originele signalen."""
-        cleaned = raw.strip()
-        if cleaned.startswith("```"):
-            lines = cleaned.split("\n")
-            cleaned = "\n".join(lines[1:])
-            if cleaned.endswith("```"):
-                cleaned = cleaned[:-3].strip()
+        cleaned = self._extract_json_payload(raw)
 
         try:
-            ai_items = json.loads(cleaned)
+            payload = json.loads(cleaned)
         except json.JSONDecodeError:
             logger.warning("Kon Groq-response niet parsen: %s", cleaned[:200])
-            return self._add_empty_ai_fields(original_signals)
+            return self._build_fallback_signals(original_signals, "AI-response kon niet worden gelezen; technische analyse wordt gebruikt.")
+
+        if isinstance(payload, dict):
+            ai_items = payload.get("analyses") or payload.get("signals") or payload.get("results") or []
+        elif isinstance(payload, list):
+            ai_items = payload
+        else:
+            ai_items = []
 
         if not isinstance(ai_items, list):
-            return self._add_empty_ai_fields(original_signals)
+            return self._build_fallback_signals(original_signals, "AI-response had ongeldig formaat; technische analyse wordt gebruikt.")
 
         # Lookup op symbool
         ai_map: Dict[str, Dict] = {}
@@ -260,22 +277,22 @@ class AiAnalysisService:
         for signal in original_signals:
             sym = signal.get("symbol", "").upper()
             ai = ai_map.get(sym, {})
-            ai_score = int(ai.get("ai_score", 0))
+            ai_score = self._coerce_score(ai.get("ai_score", 0), signal)
 
             merged = {**signal}
             merged["ai_score"] = ai_score
-            merged["ai_analysis"] = str(ai.get("ai_analysis", ""))
-            merged["ai_risk"] = str(ai.get("ai_risk", ""))
+            merged["ai_analysis"] = str(ai.get("ai_analysis", signal.get("reason", "")))
+            merged["ai_risk"] = str(ai.get("ai_risk", "Normaal marktrisico; controleer positieomvang en stop-loss."))
 
             # Als AI een andere actie aanbeveelt, neem AI-advies over
             ai_action = ai.get("action")
             if ai_action in ("buy", "sell", "hold"):
                 merged["action"] = ai_action
-            if ai.get("confidence"):
+            if ai.get("confidence") is not None:
                 merged["confidence"] = float(ai["confidence"])
-            if ai.get("target_price"):
+            if ai.get("target_price") is not None:
                 merged["target_price"] = float(ai["target_price"])
-            if ai.get("expected_return_pct"):
+            if ai.get("expected_return_pct") is not None:
                 merged["expected_return_pct"] = float(ai["expected_return_pct"])
 
             merged["rank_label"] = self._score_to_label(ai_score)
@@ -285,16 +302,61 @@ class AiAnalysisService:
         return results
 
     @staticmethod
-    def _add_empty_ai_fields(signals: List[Dict]) -> List[Dict]:
-        """Voeg lege AI-velden toe zodat de frontend altijd dezelfde structuur krijgt."""
-        out = []
-        for s in signals:
-            merged = {**s}
-            merged.setdefault("ai_score", 0)
-            merged.setdefault("ai_analysis", "")
-            merged.setdefault("ai_risk", "")
+    def _extract_json_payload(raw: str) -> str:
+        cleaned = raw.strip()
+        if cleaned.startswith("```"):
+            cleaned = re.sub(r"^```[a-zA-Z0-9_-]*\n?", "", cleaned)
+            cleaned = re.sub(r"\n?```$", "", cleaned).strip()
+
+        if cleaned.startswith("{") or cleaned.startswith("["):
+            return cleaned
+
+        first_object = cleaned.find("{")
+        last_object = cleaned.rfind("}")
+        if first_object != -1 and last_object != -1 and last_object > first_object:
+            return cleaned[first_object:last_object + 1]
+
+        first_array = cleaned.find("[")
+        last_array = cleaned.rfind("]")
+        if first_array != -1 and last_array != -1 and last_array > first_array:
+            return cleaned[first_array:last_array + 1]
+
+        return cleaned
+
+    def _build_fallback_signals(self, signals: List[Dict], note: str) -> List[Dict]:
+        out: List[Dict] = []
+        for signal in signals:
+            merged = {**signal}
+            ai_score = self._coerce_score(signal.get("ranking_score") or signal.get("confidence"), signal)
+            merged["ai_score"] = ai_score
+            merged["ai_analysis"] = f"Technische fallback: {signal.get('reason', 'Geen extra analyse beschikbaar.')}"
+            merged["ai_risk"] = note
+            if not merged.get("rank_label"):
+                merged["rank_label"] = self._score_to_label(ai_score)
             out.append(merged)
+        out.sort(key=lambda x: x.get("ai_score", 0), reverse=True)
         return out
+
+    @staticmethod
+    def _coerce_score(raw_score: object, signal: Dict) -> int:
+        try:
+            score = int(float(raw_score))
+        except (TypeError, ValueError):
+            ranking_score = signal.get("ranking_score")
+            confidence = signal.get("confidence")
+            if ranking_score is not None:
+                try:
+                    score = int(round(float(ranking_score)))
+                except (TypeError, ValueError):
+                    score = 0
+            elif confidence is not None:
+                try:
+                    score = int(round(float(confidence) * 100))
+                except (TypeError, ValueError):
+                    score = 0
+            else:
+                score = 0
+        return max(1, min(score, 99))
 
     @staticmethod
     def _score_to_label(score: int) -> str:
