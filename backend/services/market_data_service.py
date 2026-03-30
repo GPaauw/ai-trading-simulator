@@ -2,6 +2,7 @@ import json
 import logging
 import re
 import time
+import threading
 from typing import Dict, List
 from urllib.request import Request, urlopen
 
@@ -64,6 +65,18 @@ class MarketDataService:
         self._stock_data_loaded: bool = False
         self._stock_data_time: float = 0.0
         self._stock_data_ttl = 5 * 60  # herlaad stock data elke 5 min
+        # Prefetch scheduler state
+        self._prefetch_thread = None
+        self._prefetch_stop_event = threading.Event()
+        self._prefetch_lock = threading.Lock()
+        self._prefetch_status: Dict[str, object] = {
+            "is_running": False,
+            "last_run_start": None,
+            "last_run_end": None,
+            "last_run_elapsed": None,
+            "last_run_count": 0,
+            "error": None,
+        }
 
     # ------------------------------------------------------------------
     # Watchlist
@@ -380,3 +393,77 @@ class MarketDataService:
             self._cache.pop(key, None)
             return None
         return item["value"]
+
+    # ------------------------------------------------------------------
+    # Prefetch scheduler / status
+    # ------------------------------------------------------------------
+
+    def start_prefetch_scheduler(self, interval_seconds: int = 300) -> None:
+        """Start een achtergrond-thread die elke `interval_seconds` de batch-prefetch uitvoert."""
+        if self._prefetch_thread and getattr(self._prefetch_thread, "is_alive", lambda: False)():
+            return
+        self._prefetch_stop_event.clear()
+        t = threading.Thread(target=self._prefetch_loop, args=(interval_seconds,), daemon=True)
+        self._prefetch_thread = t
+        t.start()
+
+    def stop_prefetch_scheduler(self) -> None:
+        """Stop de achtergrond prefetch-thread indien actief."""
+        if self._prefetch_thread and getattr(self._prefetch_thread, "is_alive", lambda: False)():
+            self._prefetch_stop_event.set()
+            try:
+                self._prefetch_thread.join(timeout=5)
+            except Exception:
+                pass
+
+    def _prefetch_loop(self, interval_seconds: int) -> None:
+        while not self._prefetch_stop_event.is_set():
+            with self._prefetch_lock:
+                self._prefetch_status["is_running"] = True
+                self._prefetch_status["last_run_start"] = time.time()
+                self._prefetch_status["error"] = None
+            try:
+                self.prefetch_stock_data(force=True)
+                cached_count = sum(1 for k in self._cache if k.startswith("history:yf:"))
+                with self._prefetch_lock:
+                    self._prefetch_status["last_run_count"] = cached_count
+            except Exception as exc:
+                logger.exception("Prefetch error: %s", exc)
+                with self._prefetch_lock:
+                    self._prefetch_status["error"] = str(exc)
+            finally:
+                with self._prefetch_lock:
+                    end = time.time()
+                    start = self._prefetch_status.get("last_run_start") or end
+                    self._prefetch_status["last_run_end"] = end
+                    self._prefetch_status["last_run_elapsed"] = round(end - start, 2)
+                    self._prefetch_status["is_running"] = False
+            # wacht of we moeten stoppen of wachten tot volgende run
+            self._prefetch_stop_event.wait(interval_seconds)
+
+    def prefetch_once(self) -> None:
+        """Voer één directe prefetch uit (blokkerend)."""
+        with self._prefetch_lock:
+            self._prefetch_status["is_running"] = True
+            self._prefetch_status["last_run_start"] = time.time()
+            self._prefetch_status["error"] = None
+        try:
+            self.prefetch_stock_data(force=True)
+            cached_count = sum(1 for k in self._cache if k.startswith("history:yf:"))
+            with self._prefetch_lock:
+                self._prefetch_status["last_run_count"] = cached_count
+        except Exception as exc:
+            with self._prefetch_lock:
+                self._prefetch_status["error"] = str(exc)
+            raise
+        finally:
+            with self._prefetch_lock:
+                end = time.time()
+                start = self._prefetch_status.get("last_run_start") or end
+                self._prefetch_status["last_run_end"] = end
+                self._prefetch_status["last_run_elapsed"] = round(end - start, 2)
+                self._prefetch_status["is_running"] = False
+
+    def get_prefetch_status(self) -> Dict[str, object]:
+        with self._prefetch_lock:
+            return dict(self._prefetch_status)

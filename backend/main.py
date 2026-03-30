@@ -1,4 +1,5 @@
 from typing import Any, Dict, List
+import logging
 
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -30,6 +31,14 @@ learning_agent = LearningAgent()
 market_data_service = MarketDataService()
 advice_engine = AdviceEngine(market_data_service)
 alert_service = AlertService(data_service)
+
+
+@app.on_event("startup")
+def startup_event() -> None:
+    try:
+        market_data_service.start_prefetch_scheduler(interval_seconds=300)
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Failed to start prefetch scheduler: %s", exc)
 
 # Limieten (day-trading)
 LIMITS = {
@@ -79,6 +88,26 @@ def get_advice() -> List[Signal]:
 @app.get("/watchlist")
 def get_watchlist() -> List[Dict[str, str]]:
     return market_data_service.get_watchlist()
+
+
+@app.get("/prefetch/status")
+def get_prefetch_status() -> Dict[str, object]:
+    """Returneert status van achtergrond-prefetch (last run, running, count, error)."""
+    try:
+        return market_data_service.get_prefetch_status()
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/prefetch/now", dependencies=[Depends(verify_token)])
+def post_prefetch_now() -> Dict[str, object]:
+    """Forceren dat de server één prefetch uitvoert (blokkerend)."""
+    try:
+        market_data_service.prefetch_once()
+        cached = sum(1 for k in market_data_service._cache if k.startswith("history:yf:"))
+        return {"started": True, "cached_count": cached}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 @app.post("/trade", dependencies=[Depends(verify_token)], response_model=TradeResult)
