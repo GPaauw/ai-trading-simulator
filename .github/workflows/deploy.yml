@@ -1,10 +1,11 @@
 name: Deploy Frontend naar GitHub Pages
 
 on:
-  push:
-    branches:
-      - main
   workflow_dispatch:
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
 
 permissions:
   contents: write
@@ -44,3 +45,5 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_dir: frontend/build/web
           publish_branch: gh-pages
+          force_orphan: true
+          cname: ""

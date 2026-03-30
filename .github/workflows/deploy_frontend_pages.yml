@@ -3,6 +3,11 @@ name: Build and Deploy Flutter Web to GitHub Pages
 on:
   push:
     branches: [ main ]
+  workflow_dispatch:
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
 
 jobs:
   build-and-deploy:
@@ -37,4 +42,6 @@ jobs:
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_dir: ./frontend/build/web
+          publish_branch: gh-pages
           force_orphan: true
+          cname: ""
