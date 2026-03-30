@@ -1,7 +1,9 @@
 import csv
 import json
+import os
 import time
 from io import StringIO
+from pathlib import Path
 from typing import Dict, List
 from urllib.request import Request, urlopen
 
@@ -28,9 +30,35 @@ class MarketDataService:
             "User-Agent": "Mozilla/5.0 (compatible; ai-trading-simulator/1.0)",
             "Accept": "application/json,text/plain,*/*",
         }
+        # Optional: laad een uitgebreider markt-universum uit een CSV-bestand als
+        # het pad is opgegeven via de env-var `MARKET_UNIVERSE_FILE`.
+        self._extended_watchlist: List[Dict[str, str]] | None = None
+        universe_file = os.getenv("MARKET_UNIVERSE_FILE")
+        if universe_file:
+            p = Path(universe_file)
+            if p.exists() and p.is_file():
+                try:
+                    self._extended_watchlist = self._read_watchlist_csv(p)
+                except Exception:
+                    # Fouten bij het inlezen negeren; fallback naar ingebouwde watchlist
+                    self._extended_watchlist = None
 
     def get_watchlist(self) -> List[Dict[str, str]]:
-        return self.WATCHLIST
+        # Als er een uitgebreidere watchlist beschikbaar is, gebruik die.
+        return self._extended_watchlist or self.WATCHLIST
+
+    def _read_watchlist_csv(self, path: Path) -> List[Dict[str, str]]:
+        items: List[Dict[str, str]] = []
+        with path.open(newline='', encoding='utf-8') as fh:
+            reader = csv.DictReader(fh)
+            for row in reader:
+                symbol = (row.get('symbol') or '').strip()
+                provider = (row.get('provider_symbol') or '').strip()
+                market = (row.get('market') or '').strip()
+                if not symbol or not provider or not market:
+                    continue
+                items.append({"symbol": symbol.upper(), "provider_symbol": provider, "market": market})
+        return items
 
     def get_instrument(self, symbol: str, market: str | None = None) -> Dict[str, str]:
         normalized_symbol = symbol.upper()
