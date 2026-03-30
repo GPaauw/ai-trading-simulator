@@ -30,14 +30,18 @@ class _DashboardPageState extends State<DashboardPage>
   bool _loadingHistory = false;
   bool _loadingLearn = false;
   bool _loadingPortfolio = false;
+  bool _loadingAi = false;
 
   String? _signalError;
   String? _longtermError;
+  String? _aiError;
+
+  List<Map<String, dynamic>> _aiSignals = [];
 
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 5, vsync: this);
+    _tabController = TabController(length: 6, vsync: this);
     _refreshAll();
   }
 
@@ -54,6 +58,7 @@ class _DashboardPageState extends State<DashboardPage>
       _refreshHoldings(),
       _refreshHistory(),
       _refreshPortfolio(),
+      _refreshAiSignals(),
     ]);
   }
 
@@ -84,6 +89,21 @@ class _DashboardPageState extends State<DashboardPage>
       if (mounted) setState(() => _longtermError = e.toString());
     } finally {
       if (mounted) setState(() => _loadingLongterm = false);
+    }
+  }
+
+  Future<void> _refreshAiSignals() async {
+    setState(() {
+      _loadingAi = true;
+      _aiError = null;
+    });
+    try {
+      final signals = await ApiClient.getAiSignals();
+      if (mounted) setState(() => _aiSignals = signals);
+    } catch (e) {
+      if (mounted) setState(() => _aiError = e.toString());
+    } finally {
+      if (mounted) setState(() => _loadingAi = false);
     }
   }
 
@@ -471,6 +491,7 @@ class _DashboardPageState extends State<DashboardPage>
           controller: _tabController,
           isScrollable: true,
           tabs: const [
+            Tab(icon: Icon(Icons.auto_awesome), text: 'AI Analyse'),
             Tab(icon: Icon(Icons.show_chart), text: 'Aandelen'),
             Tab(icon: Icon(Icons.currency_bitcoin), text: 'Crypto'),
             Tab(icon: Icon(Icons.diamond), text: 'Grondstoffen'),
@@ -482,6 +503,7 @@ class _DashboardPageState extends State<DashboardPage>
       body: TabBarView(
         controller: _tabController,
         children: [
+          _buildAiTab(),
           _buildMarketTab('us', 'Aandelen'),
           _buildMarketTab('crypto', 'Crypto'),
           _buildMarketTab('commodity', 'Grondstoffen'),
@@ -489,6 +511,129 @@ class _DashboardPageState extends State<DashboardPage>
           _buildPortfolioTab(),
         ],
       ),
+    );
+  }
+
+  // ════════════════════════════════════════════════════════════════════
+  // AI ANALYSE TAB
+  // ════════════════════════════════════════════════════════════════════
+
+  Widget _buildAiTab() {
+    return RefreshIndicator(
+      onRefresh: _refreshAiSignals,
+      child: SingleChildScrollView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        padding: const EdgeInsets.all(16),
+        child: Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 980),
+            child: Card(
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Expanded(
+                          child: Text('AI Analyse — Top signalen',
+                              style: Theme.of(context).textTheme.titleLarge),
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.refresh),
+                          onPressed: _loadingAi ? null : _refreshAiSignals,
+                        ),
+                      ],
+                    ),
+                    const Divider(),
+                    if (_loadingAi)
+                      const Padding(
+                        padding: EdgeInsets.all(12),
+                        child: Center(child: CircularProgressIndicator()),
+                      )
+                    else if (_aiError != null)
+                      Text(_aiError!,
+                          style: TextStyle(
+                              color: Theme.of(context).colorScheme.error))
+                    else if (_aiSignals.isEmpty)
+                      const Text(
+                          'Geen AI-analyse beschikbaar. Configureer GROQ_API_KEY op de server.')
+                    else
+                      ListView.separated(
+                        shrinkWrap: true,
+                        physics: const NeverScrollableScrollPhysics(),
+                        itemCount: _aiSignals.length,
+                        separatorBuilder: (_, __) => const Divider(height: 1),
+                        itemBuilder: (_, i) =>
+                            _buildAiSignalTile(_aiSignals[i]),
+                      ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildAiSignalTile(Map<String, dynamic> signal) {
+    final symbol = signal['symbol'] as String? ?? '';
+    final market = signal['market'] as String? ?? '';
+    final price = (signal['price'] as num?)?.toDouble() ?? 0.0;
+    final aiScore = (signal['ai_score'] as num?)?.toInt() ?? 0;
+    final aiAnalysis = signal['ai_analysis'] as String? ?? '';
+    final aiRisk = signal['ai_risk'] as String? ?? '';
+    final confidence = (signal['confidence'] as num?)?.toDouble() ?? 0.0;
+    final expectedReturn =
+        (signal['expected_return_pct'] as num?)?.toDouble() ?? 0.0;
+    final targetPrice =
+        (signal['target_price'] as num?)?.toDouble() ?? 0.0;
+
+    final scoreColor = aiScore >= 75
+        ? Colors.green
+        : aiScore >= 50
+            ? Colors.orange
+            : Colors.red;
+
+    return ListTile(
+      leading: CircleAvatar(
+        backgroundColor: scoreColor,
+        child: Text(
+          '$aiScore',
+          style: const TextStyle(
+              color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
+        ),
+      ),
+      title: Text(
+        '$symbol (${_marketLabel(market)}) — BUY @ ${price.toStringAsFixed(2)}',
+      ),
+      subtitle: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const SizedBox(height: 4),
+          Text(
+            aiAnalysis,
+            style: const TextStyle(fontStyle: FontStyle.italic),
+          ),
+          if (aiRisk.isNotEmpty) ...[
+            const SizedBox(height: 2),
+            Text(
+              'Risico: $aiRisk',
+              style: TextStyle(color: Colors.red[300], fontSize: 12),
+            ),
+          ],
+          const SizedBox(height: 4),
+          Text(
+            'Doel: €${targetPrice.toStringAsFixed(2)} | '
+            '+${expectedReturn.toStringAsFixed(2)}% | '
+            'Zekerheid: ${(confidence * 100).toStringAsFixed(0)}%',
+            style: const TextStyle(fontSize: 12),
+          ),
+        ],
+      ),
+      isThreeLine: true,
     );
   }
 

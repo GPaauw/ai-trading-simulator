@@ -27,3 +27,6 @@ services:
       - key: ADVICE_MAX_WORKERS
         # Minder parallelle analyse-taken voorkomt thread- en memory-pieken
         value: "8"
+      - key: GROQ_API_KEY
+        # Gratis API key van https://console.groq.com voor AI-analyse
+        value: ""

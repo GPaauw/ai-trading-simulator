@@ -10,6 +10,7 @@ from auth.session import create_token
 from models.holding import HoldingView
 from models.signal import Signal
 from models.trade import TradeRequest, TradeResult
+from services.ai_analysis_service import AiAnalysisService
 from services.alert_service import AlertService
 from services.advice_engine import AdviceEngine
 from services.data_service import DataService
@@ -32,6 +33,7 @@ learning_agent = LearningAgent()
 market_data_service = MarketDataService()
 advice_engine = AdviceEngine(market_data_service)
 alert_service = AlertService(data_service)
+ai_analysis_service = AiAnalysisService()
 
 
 @app.on_event("startup")
@@ -87,6 +89,21 @@ def get_longterm_signals() -> List[Signal]:
 def get_premarket_signals() -> List[Signal]:
     """Pre-market scan: top 10 daytrade-picks voor vandaag (markturen genegeerd)."""
     return advice_engine.build_premarket_signals()
+
+
+@app.get("/signals/ai")
+def get_ai_signals() -> List[Dict[str, Any]]:
+    """Top signalen verrijkt met AI-analyse via Groq."""
+    if not ai_analysis_service.is_available():
+        raise HTTPException(status_code=503, detail="GROQ_API_KEY niet geconfigureerd")
+    # Gebruik snelle watchlist voor snelle response
+    buy_signals = advice_engine.build_ranked_buy_signals(
+        watchlist=market_data_service.get_fast_watchlist(),
+    )
+    if not buy_signals:
+        return []
+    signal_dicts = [s.model_dump() for s in buy_signals[:10]]
+    return ai_analysis_service.analyze_signals(signal_dicts)
 
 
 @app.get("/advice", response_model=List[Signal])

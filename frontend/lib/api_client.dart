@@ -164,6 +164,15 @@ class ApiClient {
     return data.map((e) => Signal.fromJson(e as Map<String, dynamic>)).toList();
   }
 
+  static Future<List<Map<String, dynamic>>> getAiSignals() async {
+    final response = await http.get(Uri.parse('$kBackendUrl/signals/ai'), headers: _headers());
+    if (response.statusCode != 200) {
+      throw Exception('Fout bij ophalen AI-signalen (${response.statusCode})');
+    }
+    final List<dynamic> data = jsonDecode(response.body) as List<dynamic>;
+    return data.map((e) => e as Map<String, dynamic>).toList();
+  }
+
   static String _extractDetail(String body, String fallback) {
     try {
       final map = jsonDecode(body) as Map<String, dynamic>;
