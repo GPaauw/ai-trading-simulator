@@ -55,15 +55,19 @@ class AdviceEngine:
     def invalidate_signal_cache(self) -> None:
         self._cache_time = 0.0
 
-    def build_signals(self, force_refresh: bool = False) -> list[Signal]:
+    def build_signals(
+        self,
+        force_refresh: bool = False,
+        watchlist: list[dict[str, str]] | None = None,
+    ) -> list[Signal]:
         now = time.time()
-        if not force_refresh and self._cached_signals and (now - self._cache_time) < _SIGNAL_CACHE_TTL:
+        if watchlist is None and not force_refresh and self._cached_signals and (now - self._cache_time) < _SIGNAL_CACHE_TTL:
             return self._cached_signals
 
         # Pre-fetch alle stock data in batches (sneller dan individueel)
-        self._market_data.prefetch_stock_data(force=force_refresh)
+        self._market_data.prefetch_stock_data(force=force_refresh, instruments=watchlist)
 
-        watchlist = self._market_data.get_watchlist()
+        instruments = watchlist or self._market_data.get_watchlist()
         signals: list[Signal] = []
 
         def _process(instrument: dict[str, str]) -> Signal | None:
@@ -77,23 +81,28 @@ class AdviceEngine:
                 return None
 
         with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as pool:
-            futures = {pool.submit(_process, inst): inst for inst in watchlist}
+            futures = {pool.submit(_process, inst): inst for inst in instruments}
             for future in as_completed(futures):
                 result = future.result()
                 if result is not None:
                     signals.append(result)
 
         signals.sort(key=lambda s: s.confidence, reverse=True)
-        self._cached_signals = signals
-        self._cache_time = time.time()
+        if watchlist is None:
+            self._cached_signals = signals
+            self._cache_time = time.time()
         return signals
 
     def build_signal_map(self) -> dict[str, Signal]:
         return {signal.symbol: signal for signal in self.build_signals()}
 
-    def build_ranked_buy_signals(self, force_refresh: bool = False) -> list[Signal]:
+    def build_ranked_buy_signals(
+        self,
+        force_refresh: bool = False,
+        watchlist: list[dict[str, str]] | None = None,
+    ) -> list[Signal]:
         return sorted(
-            [signal for signal in self.build_signals(force_refresh=force_refresh) if signal.action == "buy"],
+            [signal for signal in self.build_signals(force_refresh=force_refresh, watchlist=watchlist) if signal.action == "buy"],
             key=lambda signal: (-signal.ranking_score, -signal.confidence, -signal.expected_return_pct),
         )
 

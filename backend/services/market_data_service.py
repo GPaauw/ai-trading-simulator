@@ -104,20 +104,37 @@ class MarketDataService:
             raise ValueError(f"Instrument niet in watchlist: {symbol}")
         return candidates[0]
 
+    def get_fast_watchlist(self) -> List[Dict[str, str]]:
+        """Kleine watchlist voor snelle cold-start responses."""
+        return self._FALLBACK_STOCKS + self._CRYPTO_SYMBOLS + self._COMMODITY_SYMBOLS
+
+    def has_warm_stock_cache(self) -> bool:
+        """Geeft aan of er al voldoende stock-history in cache zit voor een volledige scan."""
+        if not self._stock_data_loaded:
+            return False
+        cached_count = sum(1 for key in self._cache if key.startswith("history:yf:"))
+        return cached_count >= max(10, len(self._FALLBACK_STOCKS))
+
+    def ensure_background_prefetch_started(self, interval_seconds: int = 300) -> None:
+        """Start background prefetch alleen als de stock-cache nog niet warm is."""
+        if self.has_warm_stock_cache():
+            return
+        self.start_prefetch_scheduler(interval_seconds=interval_seconds)
+
     # ------------------------------------------------------------------
     # Batch prefetch: download alle aandelen in één keer
     # ------------------------------------------------------------------
 
-    def prefetch_stock_data(self, force: bool = False) -> None:
+    def prefetch_stock_data(self, force: bool = False, instruments: List[Dict[str, str]] | None = None) -> None:
         """Download alle stock-data in batches via yf.download(). Vult cache."""
         now = time.time()
-        if not force and self._stock_data_loaded and (now - self._stock_data_time) < self._stock_data_ttl:
+        if instruments is None and not force and self._stock_data_loaded and (now - self._stock_data_time) < self._stock_data_ttl:
             return
 
         batch_size = self._get_yf_batch_size()
         use_yf_threads = self._use_yf_threads()
 
-        watchlist = self.get_watchlist()
+        watchlist = instruments or self.get_watchlist()
         non_crypto = [inst for inst in watchlist if inst["market"] != "crypto"]
         if not non_crypto:
             return
@@ -177,8 +194,9 @@ class MarketDataService:
         elapsed = time.time() - start
         cached_count = sum(1 for k in self._cache if k.startswith("history:yf:"))
         logger.info("Data geladen: %d/%d instrumenten in %.1fs", cached_count, len(yf_syms), elapsed)
-        self._stock_data_loaded = True
-        self._stock_data_time = time.time()
+        if instruments is None:
+            self._stock_data_loaded = True
+            self._stock_data_time = time.time()
 
     def _get_yf_batch_size(self) -> int:
         raw_value = os.environ.get("PREFETCH_BATCH_SIZE", str(self._DEFAULT_YF_BATCH_SIZE)).strip()

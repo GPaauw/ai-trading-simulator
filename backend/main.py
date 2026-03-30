@@ -66,7 +66,13 @@ def get_signals() -> List[Signal]:
 
     Gebruikt de bestaande TTL-cache zodat niet elke page refresh een volledige markt-scan triggert.
     """
-    buy_signals = advice_engine.build_ranked_buy_signals()
+    if market_data_service.has_warm_stock_cache():
+        buy_signals = advice_engine.build_ranked_buy_signals()
+    else:
+        market_data_service.ensure_background_prefetch_started()
+        buy_signals = advice_engine.build_ranked_buy_signals(
+            watchlist=market_data_service.get_fast_watchlist(),
+        )
     return buy_signals[:10]
 
 
@@ -268,7 +274,13 @@ def _build_holdings_view() -> List[HoldingView]:
 
 
 def _build_buy_advice() -> List[Signal]:
-    buy_signals = advice_engine.build_ranked_buy_signals()
+    if market_data_service.has_warm_stock_cache():
+        buy_signals = advice_engine.build_ranked_buy_signals()
+    else:
+        market_data_service.ensure_background_prefetch_started()
+        buy_signals = advice_engine.build_ranked_buy_signals(
+            watchlist=market_data_service.get_fast_watchlist(),
+        )
     return sorted(
         buy_signals,
         key=lambda signal: (0 if signal.market == "us" or signal.market == "eu" else 1, -signal.ranking_score),
