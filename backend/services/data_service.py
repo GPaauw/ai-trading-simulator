@@ -259,6 +259,10 @@ class DataService:
         market_value = sum(h.market_value for h in holdings)
         total_equity = self.get_cash_balance() + market_value
         start_balance = float(self._get_setting("start_balance", str(self._configured_start_balance)))
+
+        # Sla dagelijks een snapshot op
+        self._record_portfolio_snapshot(total_equity)
+
         return {
             "start_balance": round(start_balance, 2),
             "current_balance": round(total_equity, 2),
@@ -268,7 +272,28 @@ class DataService:
             "holdings_count": len(holdings),
             "total_profit_loss": round(total_equity - start_balance, 2),
             "daily_trade_count": self.get_daily_trade_count(),
+            "portfolio_history": self.get_portfolio_history(),
         }
+
+    def get_portfolio_history(self) -> List[Dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT date, balance FROM portfolio_history ORDER BY date ASC"
+            ).fetchall()
+        return [{"date": row["date"], "balance": round(float(row["balance"]), 2)} for row in rows]
+
+    def _record_portfolio_snapshot(self, balance: float) -> None:
+        today = date.today().isoformat()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO portfolio_history(date, balance)
+                VALUES (?, ?)
+                ON CONFLICT(date) DO UPDATE SET balance = excluded.balance
+                """,
+                (today, balance),
+            )
+            conn.commit()
 
     def _init_db(self) -> None:
         with self._connect() as conn:
@@ -316,6 +341,14 @@ class DataService:
                     symbol TEXT PRIMARY KEY,
                     recommendation TEXT NOT NULL,
                     updated_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS portfolio_history (
+                    date TEXT PRIMARY KEY,
+                    balance REAL NOT NULL
                 )
                 """
             )

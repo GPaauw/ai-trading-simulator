@@ -15,7 +15,7 @@ from services.learning_agent import LearningAgent
 from services.market_data_service import MarketDataService
 from services.trade_engine import execute_trade as run_trade
 
-app = FastAPI(title="AI Trading Simulator API", version="1.0.0")
+app = FastAPI(title="AI Trading Simulator API", version="2.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -46,10 +46,13 @@ def health() -> Dict[str, str]:
 
 @app.get("/signals", response_model=List[Signal])
 def get_signals() -> List[Signal]:
-    """Publiek endpoint: retourneert de 10 beste koopadviezen, gesorteerd op score."""
-    buy_signals = advice_engine.build_ranked_buy_signals()
-    if not buy_signals:
-        return advice_engine.build_signals()
+    """Publiek endpoint: retourneert de 10 beste koopadviezen.
+
+    Invalideert snapshot-cache zodat verse data wordt opgehaald bij elke refresh.
+    """
+    market_data_service.invalidate_cache()
+    advice_engine.invalidate_signal_cache()
+    buy_signals = advice_engine.build_ranked_buy_signals(force_refresh=True)
     return buy_signals[:10]
 
 
@@ -102,9 +105,14 @@ def get_sell_advice() -> List[HoldingView]:
 
 @app.post("/learn", dependencies=[Depends(verify_token)])
 def learn() -> Dict[str, Any]:
+    """Leer van trade-geschiedenis en pas signaalparameters aan."""
     history = data_service.get_trade_history()
     latest_signals = advice_engine.build_signals()
     parameters = learning_agent.learn(history, latest_signals)
+
+    # Pas geleerde parameters toe op de advice engine
+    advice_engine.apply_learned_params(learning_agent.get_engine_params())
+
     return {"parameters": parameters}
 
 
@@ -130,9 +138,6 @@ def send_daily_summary() -> Dict[str, Any]:
 
 @app.post("/login")
 def login(creds: dict) -> Dict[str, str]:
-    """Eenvoudige login endpoint. Verwacht JSON: {"username": "..", "password": ".."}.
-    Retourneert een Bearer token dat later gebruikt wordt in Authorization header.
-    """
     username = creds.get("username")
     password = creds.get("password")
     if not username or not password or not validate_credentials(username, password):

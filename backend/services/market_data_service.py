@@ -1,131 +1,310 @@
-import csv
 import json
-import os
+import logging
+import re
 import time
-from io import StringIO
-from pathlib import Path
 from typing import Dict, List
 from urllib.request import Request, urlopen
 
+import yfinance as yf
+
+logger = logging.getLogger(__name__)
+
 
 class MarketDataService:
-    """Haalt gratis marktdata op met een lichte cache om rate limits te beperken."""
+    """Haalt gratis marktdata op. Downloadt automatisch S&P 500, Nasdaq-100 en top crypto."""
 
-    WATCHLIST: List[Dict[str, str]] = [
-        {"symbol": "AAPL", "provider_symbol": "aapl.us", "market": "us"},
-        {"symbol": "MSFT", "provider_symbol": "msft.us", "market": "us"},
-        {"symbol": "NVDA", "provider_symbol": "nvda.us", "market": "us"},
-        {"symbol": "AMZN", "provider_symbol": "amzn.us", "market": "us"},
-        {"symbol": "ASML", "provider_symbol": "asml.nl", "market": "eu"},
-        {"symbol": "SAP", "provider_symbol": "sap.de", "market": "eu"},
-        {"symbol": "SIE", "provider_symbol": "sie.de", "market": "eu"},
-        {"symbol": "BMW", "provider_symbol": "bmw.de", "market": "eu"},
+    # Fallback hardcoded watchlist voor als de download faalt
+    _FALLBACK_STOCKS: List[Dict[str, str]] = [
+        {"symbol": "AAPL", "market": "us"},
+        {"symbol": "MSFT", "market": "us"},
+        {"symbol": "NVDA", "market": "us"},
+        {"symbol": "AMZN", "market": "us"},
+        {"symbol": "GOOGL", "market": "us"},
+        {"symbol": "META", "market": "us"},
+        {"symbol": "TSLA", "market": "us"},
+        {"symbol": "AVGO", "market": "us"},
+        {"symbol": "JPM", "market": "us"},
+        {"symbol": "V", "market": "us"},
+    ]
+
+    _CRYPTO_SYMBOLS: List[Dict[str, str]] = [
         {"symbol": "BTC", "provider_symbol": "BTCUSDT", "market": "crypto"},
         {"symbol": "ETH", "provider_symbol": "ETHUSDT", "market": "crypto"},
+        {"symbol": "SOL", "provider_symbol": "SOLUSDT", "market": "crypto"},
+        {"symbol": "BNB", "provider_symbol": "BNBUSDT", "market": "crypto"},
+        {"symbol": "XRP", "provider_symbol": "XRPUSDT", "market": "crypto"},
+        {"symbol": "ADA", "provider_symbol": "ADAUSDT", "market": "crypto"},
+        {"symbol": "DOGE", "provider_symbol": "DOGEUSDT", "market": "crypto"},
+        {"symbol": "AVAX", "provider_symbol": "AVAXUSDT", "market": "crypto"},
+        {"symbol": "DOT", "provider_symbol": "DOTUSDT", "market": "crypto"},
+        {"symbol": "LINK", "provider_symbol": "LINKUSDT", "market": "crypto"},
     ]
+
+    # Batch-grootte voor yfinance downloads
+    _YF_BATCH_SIZE = 50
 
     def __init__(self) -> None:
         self._cache: Dict[str, Dict[str, object]] = {}
         self._headers = {
-            "User-Agent": "Mozilla/5.0 (compatible; ai-trading-simulator/1.0)",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
             "Accept": "application/json,text/plain,*/*",
         }
-        # Optional: laad een uitgebreider markt-universum uit een CSV-bestand als
-        # het pad is opgegeven via de env-var `MARKET_UNIVERSE_FILE`.
-        self._extended_watchlist: List[Dict[str, str]] | None = None
-        universe_file = os.getenv("MARKET_UNIVERSE_FILE")
-        if universe_file:
-            p = Path(universe_file)
-            if p.exists() and p.is_file():
-                try:
-                    self._extended_watchlist = self._read_watchlist_csv(p)
-                except Exception:
-                    # Fouten bij het inlezen negeren; fallback naar ingebouwde watchlist
-                    self._extended_watchlist = None
+        self._watchlist: List[Dict[str, str]] | None = None
+        self._watchlist_loaded_at: float = 0.0
+        self._watchlist_ttl = 6 * 3600  # herlaad elke 6 uur
+        self._stock_data_loaded: bool = False
+        self._stock_data_time: float = 0.0
+        self._stock_data_ttl = 5 * 60  # herlaad stock data elke 5 min
+
+    # ------------------------------------------------------------------
+    # Watchlist
+    # ------------------------------------------------------------------
 
     def get_watchlist(self) -> List[Dict[str, str]]:
-        # Als er een uitgebreidere watchlist beschikbaar is, gebruik die.
-        return self._extended_watchlist or self.WATCHLIST
+        now = time.time()
+        if self._watchlist and (now - self._watchlist_loaded_at) < self._watchlist_ttl:
+            return self._watchlist
 
-    def _read_watchlist_csv(self, path: Path) -> List[Dict[str, str]]:
-        items: List[Dict[str, str]] = []
-        with path.open(newline='', encoding='utf-8') as fh:
-            reader = csv.DictReader(fh)
-            for row in reader:
-                symbol = (row.get('symbol') or '').strip()
-                provider = (row.get('provider_symbol') or '').strip()
-                market = (row.get('market') or '').strip()
-                if not symbol or not provider or not market:
-                    continue
-                items.append({"symbol": symbol.upper(), "provider_symbol": provider, "market": market})
-        return items
+        stocks = self._download_index_constituents()
+        self._watchlist = stocks + self._CRYPTO_SYMBOLS
+        self._watchlist_loaded_at = now
+        return self._watchlist
 
     def get_instrument(self, symbol: str, market: str | None = None) -> Dict[str, str]:
-        normalized_symbol = symbol.upper()
-        candidates = [item for item in self.WATCHLIST if item["symbol"] == normalized_symbol]
+        normalized = symbol.upper()
+        watchlist = self.get_watchlist()
+        candidates = [item for item in watchlist if item["symbol"] == normalized]
         if market:
             candidates = [item for item in candidates if item["market"] == market]
         if not candidates:
             raise ValueError(f"Instrument niet in watchlist: {symbol}")
         return candidates[0]
 
+    # ------------------------------------------------------------------
+    # Batch prefetch: download alle aandelen in één keer
+    # ------------------------------------------------------------------
+
+    def prefetch_stock_data(self, force: bool = False) -> None:
+        """Download alle stock-data in batches via yf.download(). Vult cache."""
+        now = time.time()
+        if not force and self._stock_data_loaded and (now - self._stock_data_time) < self._stock_data_ttl:
+            return
+
+        watchlist = self.get_watchlist()
+        stock_symbols = [inst["symbol"] for inst in watchlist if inst["market"] != "crypto"]
+        if not stock_symbols:
+            return
+
+        logger.info("Batch-download %d aandelen via yfinance...", len(stock_symbols))
+        start = time.time()
+
+        # Download in batches van _YF_BATCH_SIZE
+        for i in range(0, len(stock_symbols), self._YF_BATCH_SIZE):
+            batch = stock_symbols[i : i + self._YF_BATCH_SIZE]
+            try:
+                if len(batch) == 1:
+                    data = yf.download(batch[0], period="6mo", progress=False)
+                    if data.empty:
+                        continue
+                    close_col = data["Close"].dropna()
+                    closes = list(close_col.values.flatten())
+                    if len(closes) >= 30:
+                        last_row = data.iloc[-1]
+                        self._cache_stock(batch[0], closes, last_row)
+                else:
+                    data = yf.download(
+                        batch, period="6mo", group_by="ticker",
+                        threads=True, progress=False,
+                    )
+                    if data.empty:
+                        continue
+                    for sym in batch:
+                        try:
+                            sym_data = data[sym]
+                            close_col = sym_data["Close"].dropna()
+                            closes = list(close_col.values.flatten())
+                            if len(closes) >= 30:
+                                last_row = sym_data.dropna().iloc[-1]
+                                self._cache_stock(sym, closes, last_row)
+                        except (KeyError, IndexError):
+                            continue
+            except Exception as exc:
+                logger.warning("Batch-download fout voor %s: %s", batch[:3], exc)
+
+        elapsed = time.time() - start
+        cached_count = sum(1 for k in self._cache if k.startswith("history:yf:"))
+        logger.info("Stock data geladen: %d/%d aandelen in %.1fs", cached_count, len(stock_symbols), elapsed)
+        self._stock_data_loaded = True
+        self._stock_data_time = time.time()
+
+    def _cache_stock(self, symbol: str, closes: List[float], last_row) -> None:
+        """Sla stock-data op in cache."""
+        # History cache (lang TTL, wijzigt pas bij volgende batch)
+        self._set_cache(f"history:yf:{symbol}", closes, ttl_seconds=self._stock_data_ttl + 60)
+        # Snapshot cache
+        try:
+            snapshot = {
+                "open": float(last_row.get("Open", closes[-1])),
+                "high": float(last_row.get("High", closes[-1])),
+                "low": float(last_row.get("Low", closes[-1])),
+                "price": float(closes[-1]),
+                "volume": float(last_row.get("Volume", 0)),
+            }
+            self._set_cache(f"snapshot:yf:{symbol}", snapshot, ttl_seconds=self._stock_data_ttl + 60)
+        except Exception:
+            pass
+
+    # ------------------------------------------------------------------
+    # Snapshot & History
+    # ------------------------------------------------------------------
+
     def get_snapshot(self, instrument: Dict[str, str]) -> Dict[str, float]:
-        key = f"snapshot:{instrument['provider_symbol']}"
-        cached = self._get_cache(key)
-        if cached:
-            return cached  # type: ignore[return-value]
-
         if instrument["market"] == "crypto":
+            key = f"snapshot:{instrument['provider_symbol']}"
+            cached = self._get_cache(key)
+            if cached:
+                return cached  # type: ignore[return-value]
             snapshot = self._fetch_crypto_snapshot(instrument["provider_symbol"])
+            self._set_cache(key, snapshot, ttl_seconds=30)
+            return snapshot
         else:
-            snapshot = self._fetch_stooq_snapshot(instrument["provider_symbol"])
-
-        self._set_cache(key, snapshot, ttl_seconds=45)
-        return snapshot
+            key = f"snapshot:yf:{instrument['symbol']}"
+            cached = self._get_cache(key)
+            if cached:
+                return cached  # type: ignore[return-value]
+            # Individuele fallback als batch-data niet beschikbaar is
+            snapshot = self._fetch_stock_snapshot_individual(instrument["symbol"])
+            self._set_cache(key, snapshot, ttl_seconds=60)
+            return snapshot
 
     def get_history(self, instrument: Dict[str, str], points: int = 120) -> List[float]:
-        key = f"history:{instrument['provider_symbol']}:{points}"
-        cached = self._get_cache(key)
-        if cached:
-            return cached  # type: ignore[return-value]
-
         if instrument["market"] == "crypto":
+            key = f"history:{instrument['provider_symbol']}:{points}"
+            cached = self._get_cache(key)
+            if cached:
+                return cached  # type: ignore[return-value]
             closes = self._fetch_crypto_history(instrument["provider_symbol"], points)
+            self._set_cache(key, closes, ttl_seconds=3 * 60)
+            return closes
         else:
-            closes = self._fetch_stooq_daily_history(instrument["provider_symbol"], points)
+            key = f"history:yf:{instrument['symbol']}"
+            cached = self._get_cache(key)
+            if cached:
+                closes = cached  # type: ignore[assignment]
+                return closes[-points:]
+            # Individuele fallback
+            closes = self._fetch_stock_history_individual(instrument["symbol"], points)
+            self._set_cache(key, closes, ttl_seconds=3 * 60)
+            return closes
 
-        self._set_cache(key, closes, ttl_seconds=5 * 60)
-        return closes
+    def invalidate_cache(self) -> None:
+        """Verwijder snapshot-cache en markeer stock data als verlopen."""
+        keys_to_remove = [k for k in self._cache if k.startswith("snapshot:")]
+        for k in keys_to_remove:
+            self._cache.pop(k, None)
+        self._stock_data_loaded = False
 
-    def _fetch_stooq_snapshot(self, provider_symbol: str) -> Dict[str, float]:
-        url = f"https://stooq.com/q/l/?s={provider_symbol}&i=1"
-        raw = self._get_text(url).strip()
-        parts = [p.strip() for p in raw.split(",")]
-        if len(parts) < 8 or parts[6] == "N/D":
-            raise ValueError(f"Geen snapshot beschikbaar voor {provider_symbol}")
+    # ------------------------------------------------------------------
+    # Index-download: S&P 500 + Nasdaq-100
+    # ------------------------------------------------------------------
 
+    def _download_index_constituents(self) -> List[Dict[str, str]]:
+        """Download S&P 500 en Nasdaq-100 tickers van Wikipedia."""
+        seen: set[str] = set()
+        instruments: List[Dict[str, str]] = []
+
+        # S&P 500
+        try:
+            sp500 = self._fetch_wikipedia_table(
+                "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies",
+                symbol_col=0,
+            )
+            for symbol in sp500:
+                if symbol not in seen:
+                    seen.add(symbol)
+                    instruments.append({"symbol": symbol, "market": "us"})
+        except Exception:
+            pass
+
+        # Nasdaq-100
+        try:
+            ndx = self._fetch_wikipedia_table(
+                "https://en.wikipedia.org/wiki/Nasdaq-100",
+                symbol_col=1,
+            )
+            for symbol in ndx:
+                if symbol not in seen:
+                    seen.add(symbol)
+                    instruments.append({"symbol": symbol, "market": "us"})
+        except Exception:
+            pass
+
+        if not instruments:
+            return self._FALLBACK_STOCKS
+
+        return instruments
+
+    def _fetch_wikipedia_table(self, url: str, symbol_col: int) -> List[str]:
+        """Parseer de eerste HTML tabel op een Wikipedia pagina en return ticker symbols."""
+        html = self._get_text(url)
+        table_match = re.search(
+            r'<table[^>]*class="[^"]*wikitable[^"]*"[^>]*>(.*?)</table>',
+            html,
+            re.DOTALL,
+        )
+        if not table_match:
+            return []
+
+        table_html = table_match.group(1)
+        symbols: List[str] = []
+
+        rows = re.findall(r"<tr[^>]*>(.*?)</tr>", table_html, re.DOTALL)
+        for row in rows[1:]:  # skip header
+            cells = re.findall(r"<t[dh][^>]*>(.*?)</t[dh]>", row, re.DOTALL)
+            if len(cells) <= symbol_col:
+                continue
+
+            cell_text = re.sub(r"<[^>]+>", "", cells[symbol_col]).strip()
+            symbol = re.sub(r"\[.*?\]", "", cell_text).strip()
+            if not symbol or not re.match(r"^[A-Z]{1,5}$", symbol):
+                continue
+            symbols.append(symbol)
+
+        return symbols
+
+    # ------------------------------------------------------------------
+    # Individuele stock fetchers (fallback als batch niet beschikbaar)
+    # ------------------------------------------------------------------
+
+    def _fetch_stock_snapshot_individual(self, symbol: str) -> Dict[str, float]:
+        ticker = yf.Ticker(symbol)
+        info = ticker.fast_info
+        price = float(info.last_price)
+        prev_close = float(info.previous_close) if info.previous_close else price
+        day_high = float(info.day_high) if info.day_high else price
+        day_low = float(info.day_low) if info.day_low else price
+        day_open = float(info.open) if info.open else prev_close
+        volume = float(info.last_volume) if info.last_volume else 0.0
         return {
-            "open": float(parts[3]),
-            "high": float(parts[4]),
-            "low": float(parts[5]),
-            "price": float(parts[6]),
-            "volume": float(parts[7] or 0),
+            "open": day_open,
+            "high": day_high,
+            "low": day_low,
+            "price": price,
+            "volume": volume,
         }
 
-    def _fetch_stooq_daily_history(self, provider_symbol: str, points: int) -> List[float]:
-        url = f"https://stooq.com/q/d/l/?s={provider_symbol}&i=d"
-        raw = self._get_text(url)
-        reader = csv.DictReader(StringIO(raw))
-        closes: List[float] = []
-        for row in reader:
-            close_value = row.get("Close")
-            if not close_value:
-                continue
-            try:
-                closes.append(float(close_value))
-            except ValueError:
-                continue
+    def _fetch_stock_history_individual(self, symbol: str, points: int) -> List[float]:
+        ticker = yf.Ticker(symbol)
+        period = "6mo" if points <= 130 else "1y"
+        hist = ticker.history(period=period)
+        if hist.empty:
+            return []
+        closes = hist["Close"].dropna().tolist()
         return closes[-points:]
+
+    # ------------------------------------------------------------------
+    # Crypto fetchers (Binance, 5 min candles)
+    # ------------------------------------------------------------------
 
     def _fetch_crypto_snapshot(self, provider_symbol: str) -> Dict[str, float]:
         url = f"https://api.binance.com/api/v3/ticker/24hr?symbol={provider_symbol}"
@@ -141,7 +320,7 @@ class MarketDataService:
     def _fetch_crypto_history(self, provider_symbol: str, points: int) -> List[float]:
         limit = max(30, min(points, 500))
         url = (
-            f"https://api.binance.com/api/v3/klines?symbol={provider_symbol}&interval=15m"
+            f"https://api.binance.com/api/v3/klines?symbol={provider_symbol}&interval=5m"
             f"&limit={limit}"
         )
         data = self._get_json(url)
@@ -149,6 +328,10 @@ class MarketDataService:
         for row in data:
             closes.append(float(row[4]))
         return closes
+
+    # ------------------------------------------------------------------
+    # HTTP helpers
+    # ------------------------------------------------------------------
 
     def _get_json(self, url: str):
         req = Request(url, headers=self._headers)
@@ -160,17 +343,21 @@ class MarketDataService:
         with urlopen(req, timeout=12) as resp:
             return resp.read().decode("utf-8")
 
-    def _set_cache(self, key: str, value, ttl_seconds: int) -> None:
+    # ------------------------------------------------------------------
+    # Cache
+    # ------------------------------------------------------------------
+
+    def _set_cache(self, key: str, value: object, ttl_seconds: int) -> None:
         self._cache[key] = {
             "expires_at": time.time() + ttl_seconds,
             "value": value,
         }
 
-    def _get_cache(self, key: str):
+    def _get_cache(self, key: str) -> object | None:
         item = self._cache.get(key)
         if not item:
             return None
-        if item["expires_at"] < time.time():
+        if item["expires_at"] < time.time():  # type: ignore[operator]
             self._cache.pop(key, None)
             return None
         return item["value"]
