@@ -16,3 +16,4 @@ class Signal(BaseModel):
     ranking_score: float = 0.0
     rank_label: str = ""
     reason: str
+    strategy: str = "daytrade"  # "daytrade" or "longterm"

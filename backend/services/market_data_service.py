@@ -40,6 +40,15 @@ class MarketDataService:
         {"symbol": "LINK", "provider_symbol": "LINKUSDT", "market": "crypto"},
     ]
 
+    _COMMODITY_SYMBOLS: List[Dict[str, str]] = [
+        {"symbol": "GOLD", "yf_symbol": "GC=F", "market": "commodity"},
+        {"symbol": "SILVER", "yf_symbol": "SI=F", "market": "commodity"},
+        {"symbol": "OIL", "yf_symbol": "CL=F", "market": "commodity"},
+        {"symbol": "NATGAS", "yf_symbol": "NG=F", "market": "commodity"},
+        {"symbol": "COPPER", "yf_symbol": "HG=F", "market": "commodity"},
+        {"symbol": "PLATINUM", "yf_symbol": "PL=F", "market": "commodity"},
+    ]
+
     # Batch-grootte voor yfinance downloads
     _YF_BATCH_SIZE = 50
 
@@ -66,7 +75,7 @@ class MarketDataService:
             return self._watchlist
 
         stocks = self._download_index_constituents()
-        self._watchlist = stocks + self._CRYPTO_SYMBOLS
+        self._watchlist = stocks + self._CRYPTO_SYMBOLS + self._COMMODITY_SYMBOLS
         self._watchlist_loaded_at = now
         return self._watchlist
 
@@ -91,16 +100,24 @@ class MarketDataService:
             return
 
         watchlist = self.get_watchlist()
-        stock_symbols = [inst["symbol"] for inst in watchlist if inst["market"] != "crypto"]
-        if not stock_symbols:
+        non_crypto = [inst for inst in watchlist if inst["market"] != "crypto"]
+        if not non_crypto:
             return
 
-        logger.info("Batch-download %d aandelen via yfinance...", len(stock_symbols))
+        # Mapping van yfinance-ticker naar display-symbool
+        yf_to_display: Dict[str, str] = {}
+        yf_syms: List[str] = []
+        for inst in non_crypto:
+            yf_sym = inst.get("yf_symbol", inst["symbol"])
+            yf_to_display[yf_sym] = inst["symbol"]
+            yf_syms.append(yf_sym)
+
+        logger.info("Batch-download %d instrumenten via yfinance...", len(yf_syms))
         start = time.time()
 
         # Download in batches van _YF_BATCH_SIZE
-        for i in range(0, len(stock_symbols), self._YF_BATCH_SIZE):
-            batch = stock_symbols[i : i + self._YF_BATCH_SIZE]
+        for i in range(0, len(yf_syms), self._YF_BATCH_SIZE):
+            batch = yf_syms[i : i + self._YF_BATCH_SIZE]
             try:
                 if len(batch) == 1:
                     data = yf.download(batch[0], period="6mo", progress=False)
@@ -110,7 +127,7 @@ class MarketDataService:
                     closes = list(close_col.values.flatten())
                     if len(closes) >= 30:
                         last_row = data.iloc[-1]
-                        self._cache_stock(batch[0], closes, last_row)
+                        self._cache_stock(yf_to_display[batch[0]], closes, last_row)
                 else:
                     data = yf.download(
                         batch, period="6mo", group_by="ticker",
@@ -118,14 +135,14 @@ class MarketDataService:
                     )
                     if data.empty:
                         continue
-                    for sym in batch:
+                    for yf_sym in batch:
                         try:
-                            sym_data = data[sym]
+                            sym_data = data[yf_sym]
                             close_col = sym_data["Close"].dropna()
                             closes = list(close_col.values.flatten())
                             if len(closes) >= 30:
                                 last_row = sym_data.dropna().iloc[-1]
-                                self._cache_stock(sym, closes, last_row)
+                                self._cache_stock(yf_to_display[yf_sym], closes, last_row)
                         except (KeyError, IndexError):
                             continue
             except Exception as exc:
@@ -133,7 +150,7 @@ class MarketDataService:
 
         elapsed = time.time() - start
         cached_count = sum(1 for k in self._cache if k.startswith("history:yf:"))
-        logger.info("Stock data geladen: %d/%d aandelen in %.1fs", cached_count, len(stock_symbols), elapsed)
+        logger.info("Data geladen: %d/%d instrumenten in %.1fs", cached_count, len(yf_syms), elapsed)
         self._stock_data_loaded = True
         self._stock_data_time = time.time()
 
@@ -173,7 +190,8 @@ class MarketDataService:
             if cached:
                 return cached  # type: ignore[return-value]
             # Individuele fallback als batch-data niet beschikbaar is
-            snapshot = self._fetch_stock_snapshot_individual(instrument["symbol"])
+            yf_symbol = instrument.get("yf_symbol", instrument["symbol"])
+            snapshot = self._fetch_stock_snapshot_individual(yf_symbol)
             self._set_cache(key, snapshot, ttl_seconds=60)
             return snapshot
 
@@ -193,7 +211,8 @@ class MarketDataService:
                 closes = cached  # type: ignore[assignment]
                 return closes[-points:]
             # Individuele fallback
-            closes = self._fetch_stock_history_individual(instrument["symbol"], points)
+            yf_symbol = instrument.get("yf_symbol", instrument["symbol"])
+            closes = self._fetch_stock_history_individual(yf_symbol, points)
             self._set_cache(key, closes, ttl_seconds=3 * 60)
             return closes
 

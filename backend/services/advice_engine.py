@@ -33,6 +33,8 @@ class AdviceEngine:
         # Signaal-cache
         self._cached_signals: list[Signal] = []
         self._cache_time: float = 0.0
+        self._cached_longterm: list[Signal] = []
+        self._longterm_cache_time: float = 0.0
 
     def apply_learned_params(self, params: Dict[str, float]) -> None:
         for key in params:
@@ -83,6 +85,64 @@ class AdviceEngine:
             [signal for signal in self.build_signals(force_refresh=force_refresh) if signal.action == "buy"],
             key=lambda signal: (-signal.ranking_score, -signal.confidence, -signal.expected_return_pct),
         )
+
+    def build_ranked_longterm_signals(self, force_refresh: bool = False) -> list[Signal]:
+        """Retourneer langetermijn koop-signalen (multi-day horizon)."""
+        now = time.time()
+        if not force_refresh and self._cached_longterm and (now - self._longterm_cache_time) < _SIGNAL_CACHE_TTL:
+            return self._cached_longterm
+
+        self._market_data.prefetch_stock_data(force=force_refresh)
+        watchlist = self._market_data.get_watchlist()
+        signals: list[Signal] = []
+
+        def _process(instrument: dict[str, str]) -> Signal | None:
+            try:
+                snapshot = self._market_data.get_snapshot(instrument)
+                closes = self._market_data.get_history(instrument, points=120)
+                if len(closes) < 30:
+                    return None
+                return self._to_longterm_signal(instrument, snapshot, closes)
+            except Exception:
+                return None
+
+        with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as pool:
+            futures = {pool.submit(_process, inst): inst for inst in watchlist}
+            for future in as_completed(futures):
+                result = future.result()
+                if result is not None and result.action == "buy":
+                    signals.append(result)
+
+        signals.sort(key=lambda s: (-s.ranking_score, -s.confidence, -s.expected_return_pct))
+        self._cached_longterm = signals
+        self._longterm_cache_time = time.time()
+        return signals
+
+    def build_premarket_signals(self) -> list[Signal]:
+        """Retourneer pre-market signalen (markturen worden genegeerd)."""
+        self._market_data.prefetch_stock_data()
+        watchlist = self._market_data.get_watchlist()
+        signals: list[Signal] = []
+
+        def _process(instrument: dict[str, str]) -> Signal | None:
+            try:
+                snapshot = self._market_data.get_snapshot(instrument)
+                closes = self._market_data.get_history(instrument, points=120)
+                if len(closes) < 30:
+                    return None
+                return self._to_signal(instrument, snapshot, closes, ignore_market_hours=True)
+            except Exception:
+                return None
+
+        with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as pool:
+            futures = {pool.submit(_process, inst): inst for inst in watchlist}
+            for future in as_completed(futures):
+                result = future.result()
+                if result is not None and result.action == "buy":
+                    signals.append(result)
+
+        signals.sort(key=lambda s: (-s.ranking_score, -s.confidence, -s.expected_return_pct))
+        return signals[:10]
 
     def build_holding_view(
         self,
@@ -184,7 +244,7 @@ class AdviceEngine:
     # Signaalberekening met SMA, RSI, MACD, Bollinger, Volume
     # ------------------------------------------------------------------
 
-    def _to_signal(self, instrument: dict[str, str], snapshot: dict[str, float], closes: list[float]) -> Signal:
+    def _to_signal(self, instrument: dict[str, str], snapshot: dict[str, float], closes: list[float], ignore_market_hours: bool = False) -> Signal:
         price = snapshot["price"]
         volume = snapshot.get("volume", 0.0)
 
@@ -259,7 +319,7 @@ class AdviceEngine:
             2.0,
         )
 
-        market_open = _is_market_open(instrument["market"])
+        market_open = ignore_market_hours or _is_market_open(instrument["market"])
         if expected_move_pct > 0.15:
             action = "buy"
         elif expected_move_pct < -0.15:
@@ -350,6 +410,174 @@ class AdviceEngine:
             reason=reason,
         )
 
+    # ------------------------------------------------------------------
+    # Langetermijn signaalberekening
+    # ------------------------------------------------------------------
+
+    def _to_longterm_signal(self, instrument: dict[str, str], snapshot: dict[str, float], closes: list[float]) -> Signal:
+        price = snapshot["price"]
+        volume = snapshot.get("volume", 0.0)
+
+        sma5 = _sma(closes, 5)
+        sma20 = _sma(closes, 20)
+        sma50 = _sma(closes, min(50, len(closes)))
+        rsi = _rsi(closes, 14)
+        momentum_pct = ((closes[-1] / closes[-20]) - 1.0) * 100
+        volatility_pct = _volatility_pct(closes, 20)
+        macd_line, signal_line, macd_histogram = _macd(closes)
+        bb_upper, bb_middle, bb_lower = _bollinger_bands(closes, 20, 2.0)
+        avg_volume = _avg_volume_from_closes(closes, 20)
+        volume_ratio = (volume / avg_volume) if avg_volume > 0 else 1.0
+
+        # Langetermijn trend (50-dag)
+        long_momentum_pct = ((closes[-1] / closes[0]) - 1.0) * 100 if len(closes) > 50 else momentum_pct
+
+        p = self._params
+        score = 0.0
+
+        # SMA crossover (kort boven lang = bullish)
+        if sma5 > sma20:
+            score += 1.0 * p["sma_weight"]
+        else:
+            score -= 1.0 * p["sma_weight"]
+
+        # Prijs boven SMA50 = uptrend
+        if price > sma50:
+            score += 0.8
+
+        # RSI
+        if rsi < 35:
+            score += 1.5 * p["rsi_weight"]
+        elif rsi < 45:
+            score += 0.6 * p["rsi_weight"]
+        elif rsi > 75:
+            score -= 1.5 * p["rsi_weight"]
+        elif rsi > 65:
+            score -= 0.5 * p["rsi_weight"]
+
+        # Momentum (langetermijn weegt zwaarder)
+        if long_momentum_pct > 5.0:
+            score += 1.5 * p["momentum_weight"]
+        elif long_momentum_pct > 2.0:
+            score += 1.0 * p["momentum_weight"]
+        elif long_momentum_pct < -5.0:
+            score -= 1.5 * p["momentum_weight"]
+        elif long_momentum_pct < -2.0:
+            score -= 1.0 * p["momentum_weight"]
+
+        # MACD
+        if macd_histogram > 0 and macd_line > signal_line:
+            score += 1.0 * p["macd_weight"]
+        elif macd_histogram < 0 and macd_line < signal_line:
+            score -= 1.0 * p["macd_weight"]
+
+        # Bollinger Bands
+        if price <= bb_lower:
+            score += 1.0 * p["bb_weight"]
+        elif price >= bb_upper:
+            score -= 1.0 * p["bb_weight"]
+
+        # Volume
+        if volume_ratio > 1.5 and score > 0:
+            score += 0.5 * p["volume_weight"]
+        elif volume_ratio > 1.5 and score < 0:
+            score -= 0.5 * p["volume_weight"]
+
+        # Langetermijn: verwachte beweging is groter
+        expected_move_pct = _clamp(
+            (score * 1.2) + (long_momentum_pct * 0.15),
+            -15.0,
+            15.0,
+        )
+
+        if expected_move_pct > 0.5:
+            action = "buy"
+        elif expected_move_pct < -0.5:
+            action = "sell"
+        else:
+            action = "hold"
+
+        confidence = _clamp(
+            0.5
+            + p["confidence_bias"]
+            + (abs(score) * 0.05)
+            + (min(abs(long_momentum_pct), 10.0) * 0.02)
+            + (0.03 if macd_histogram > 0 and action == "buy" else 0.0)
+            + (0.02 if price > sma50 and action == "buy" else 0.0),
+            0.50,
+            0.95,
+        )
+
+        risk_pct = _clamp(
+            (volatility_pct * 0.5 + (0.5 if instrument["market"] == "crypto" else 0.0)) * p["risk_multiplier"],
+            1.0,
+            8.0,
+        )
+
+        expected_trade_return_pct = _clamp(abs(expected_move_pct), 0.5, 15.0)
+
+        # Tijdshorizon inschatting (hoe sterker het signaal, hoe sneller het doel)
+        if abs(expected_move_pct) > 8:
+            expected_days = 20
+        elif abs(expected_move_pct) > 4:
+            expected_days = 10
+        else:
+            expected_days = 5
+
+        ranking_score = _clamp(
+            (confidence - 0.5) * 60
+            + expected_trade_return_pct * 3.0
+            + max(long_momentum_pct, 0.0) * 0.8
+            + (3.0 if macd_histogram > 0 and action == "buy" else 0.0)
+            + (2.0 if price > sma50 and action == "buy" else 0.0)
+            + (2.0 if price <= bb_lower and action == "buy" else 0.0)
+            + 30.0
+            - (risk_pct * 1.5),
+            0.0,
+            100.0,
+        )
+
+        rank_label = ""
+        if action == "buy":
+            if ranking_score >= 80:
+                rank_label = "Topkans"
+            elif ranking_score >= 70:
+                rank_label = "Sterke setup"
+            elif ranking_score >= 60:
+                rank_label = "Goede kans"
+            else:
+                rank_label = "Interessant"
+
+        target_price = round(price * (1 + expected_trade_return_pct / 100), 4)
+        expected_profit = round(1000 * expected_trade_return_pct / 100, 2)
+        time_label = f"~{expected_days} dagen"
+
+        reason = (
+            f"SMA5/20/50={sma5:.2f}/{sma20:.2f}/{sma50:.2f}, RSI={rsi:.1f}, "
+            f"MACD={macd_histogram:+.3f}, "
+            f"BB={bb_lower:.2f}/{bb_upper:.2f}, "
+            f"mom={long_momentum_pct:+.2f}%, vol={volatility_pct:.2f}% | "
+            f"doel €{target_price:.2f} in {time_label}"
+        )
+
+        return Signal(
+            id=str(uuid.uuid4()),
+            symbol=instrument["symbol"],
+            market=instrument["market"],
+            action=action,
+            confidence=round(confidence, 4),
+            price=round(price, 4),
+            risk_pct=round(risk_pct, 3),
+            expected_return_pct=round(expected_trade_return_pct, 3),
+            target_price=target_price,
+            expected_profit=expected_profit,
+            expected_days=expected_days,
+            ranking_score=round(ranking_score, 3),
+            rank_label=rank_label,
+            reason=reason,
+            strategy="longterm",
+        )
+
 
 # ==================================================================
 # Technische analyse functies
@@ -359,6 +587,9 @@ def _is_market_open(market: str) -> bool:
     if market == "crypto":
         return True
     now = datetime.now(ZoneInfo("Europe/Amsterdam"))
+    if market == "commodity":
+        # Grondstoffenmarkt: ~23h per dag op werkdagen
+        return now.weekday() < 5
     # US markt: 15:30-22:00 NL tijd
     return (now.hour == 15 and now.minute >= 30) or (16 <= now.hour < 22)
 

@@ -33,7 +33,7 @@ alert_service = AlertService(data_service)
 
 # Limieten (day-trading)
 LIMITS = {
-    "max_position": 10_000.0,
+    "max_position": float("inf"),
     "max_risk": 0.01,
     "max_trades_per_day": 50,
 }
@@ -54,6 +54,21 @@ def get_signals() -> List[Signal]:
     advice_engine.invalidate_signal_cache()
     buy_signals = advice_engine.build_ranked_buy_signals(force_refresh=True)
     return buy_signals[:10]
+
+
+@app.get("/signals/longterm", response_model=List[Signal])
+def get_longterm_signals() -> List[Signal]:
+    """Top 10 langetermijn koop-signalen (multi-day horizon)."""
+    market_data_service.invalidate_cache()
+    advice_engine.invalidate_signal_cache()
+    longterm = advice_engine.build_ranked_longterm_signals(force_refresh=True)
+    return longterm[:10]
+
+
+@app.get("/signals/premarket", response_model=List[Signal])
+def get_premarket_signals() -> List[Signal]:
+    """Pre-market scan: top 10 daytrade-picks voor vandaag (markturen genegeerd)."""
+    return advice_engine.build_premarket_signals()
 
 
 @app.get("/advice", response_model=List[Signal])
@@ -90,6 +105,13 @@ def get_portfolio() -> Dict[str, Any]:
     holdings = _build_holdings_view()
     portfolio = data_service.get_portfolio(holdings)
     portfolio["holdings"] = holdings
+
+    # Dagelijkse P/L
+    daily_realized = data_service.get_daily_realized_pnl()
+    daily_unrealized = sum(h.unrealized_profit_loss for h in holdings)
+    portfolio["daily_realized_pnl"] = round(daily_realized, 2)
+    portfolio["daily_unrealized_pnl"] = round(daily_unrealized, 2)
+    portfolio["daily_total_pnl"] = round(daily_realized + daily_unrealized, 2)
     return portfolio
 
 

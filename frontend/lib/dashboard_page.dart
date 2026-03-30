@@ -13,30 +13,44 @@ class DashboardPage extends StatefulWidget {
   State<DashboardPage> createState() => _DashboardPageState();
 }
 
-class _DashboardPageState extends State<DashboardPage> {
+class _DashboardPageState extends State<DashboardPage>
+    with SingleTickerProviderStateMixin {
+  late TabController _tabController;
+
   List<Signal> _signals = [];
+  List<Signal> _longtermSignals = [];
   List<Holding> _holdings = [];
   List<Trade> _history = [];
   Map<String, dynamic>? _learnResult;
   Map<String, dynamic>? _portfolio;
 
   bool _loadingSignals = false;
+  bool _loadingLongterm = false;
   bool _loadingHoldings = false;
   bool _loadingHistory = false;
   bool _loadingLearn = false;
   bool _loadingPortfolio = false;
 
   String? _signalError;
+  String? _longtermError;
 
   @override
   void initState() {
     super.initState();
+    _tabController = TabController(length: 5, vsync: this);
     _refreshAll();
+  }
+
+  @override
+  void dispose() {
+    _tabController.dispose();
+    super.dispose();
   }
 
   Future<void> _refreshAll() async {
     await Future.wait([
       _refreshSignals(),
+      _refreshLongtermSignals(),
       _refreshHoldings(),
       _refreshHistory(),
       _refreshPortfolio(),
@@ -50,17 +64,26 @@ class _DashboardPageState extends State<DashboardPage> {
     });
     try {
       final signals = await ApiClient.getSignals();
-      if (mounted) {
-        setState(() => _signals = signals);
-      }
+      if (mounted) setState(() => _signals = signals);
     } catch (e) {
-      if (mounted) {
-        setState(() => _signalError = e.toString());
-      }
+      if (mounted) setState(() => _signalError = e.toString());
     } finally {
-      if (mounted) {
-        setState(() => _loadingSignals = false);
-      }
+      if (mounted) setState(() => _loadingSignals = false);
+    }
+  }
+
+  Future<void> _refreshLongtermSignals() async {
+    setState(() {
+      _loadingLongterm = true;
+      _longtermError = null;
+    });
+    try {
+      final signals = await ApiClient.getLongtermSignals();
+      if (mounted) setState(() => _longtermSignals = signals);
+    } catch (e) {
+      if (mounted) setState(() => _longtermError = e.toString());
+    } finally {
+      if (mounted) setState(() => _loadingLongterm = false);
     }
   }
 
@@ -69,15 +92,10 @@ class _DashboardPageState extends State<DashboardPage> {
     setState(() => _loadingHoldings = true);
     try {
       final holdings = await ApiClient.getSellAdvice();
-      if (mounted) {
-        setState(() => _holdings = holdings);
-      }
-    } catch (_) {
-      // Niet blokkeren; gebruiker kan handmatig verversen.
-    } finally {
-      if (mounted) {
-        setState(() => _loadingHoldings = false);
-      }
+      if (mounted) setState(() => _holdings = holdings);
+    } catch (_) {}
+    finally {
+      if (mounted) setState(() => _loadingHoldings = false);
     }
   }
 
@@ -86,15 +104,10 @@ class _DashboardPageState extends State<DashboardPage> {
     setState(() => _loadingHistory = true);
     try {
       final history = await ApiClient.getHistory();
-      if (mounted) {
-        setState(() => _history = history);
-      }
-    } catch (_) {
-      // Niet blokkeren; gebruiker kan handmatig vernieuwen.
-    } finally {
-      if (mounted) {
-        setState(() => _loadingHistory = false);
-      }
+      if (mounted) setState(() => _history = history);
+    } catch (_) {}
+    finally {
+      if (mounted) setState(() => _loadingHistory = false);
     }
   }
 
@@ -103,15 +116,10 @@ class _DashboardPageState extends State<DashboardPage> {
     setState(() => _loadingPortfolio = true);
     try {
       final portfolio = await ApiClient.getPortfolio();
-      if (mounted) {
-        setState(() => _portfolio = portfolio);
-      }
-    } catch (_) {
-      // Niet blokkeren; gebruiker kan handmatig vernieuwen.
-    } finally {
-      if (mounted) {
-        setState(() => _loadingPortfolio = false);
-      }
+      if (mounted) setState(() => _portfolio = portfolio);
+    } catch (_) {}
+    finally {
+      if (mounted) setState(() => _loadingPortfolio = false);
     }
   }
 
@@ -123,58 +131,64 @@ class _DashboardPageState extends State<DashboardPage> {
       return;
     }
 
-    final currentBalance = (_portfolio?['available_cash'] as num?)?.toDouble() ?? 2000.0;
+    final currentBalance =
+        (_portfolio?['available_cash'] as num?)?.toDouble() ?? 2000.0;
     final suggestedAmount =
-        (currentBalance * (signal.riskPct / 100.0) * 8.0).clamp(100.0, currentBalance * 0.4);
-    final amountController = TextEditingController(
-      text: suggestedAmount.toStringAsFixed(2),
-    );
-    final priceController = TextEditingController(text: signal.price.toStringAsFixed(4));
+        (currentBalance * (signal.riskPct / 100.0) * 8.0)
+            .clamp(100.0, currentBalance * 0.4);
+    final amountController =
+        TextEditingController(text: suggestedAmount.toStringAsFixed(2));
+    final priceController =
+        TextEditingController(text: signal.price.toStringAsFixed(4));
     final quantityController = TextEditingController();
 
     final confirmed = await showDialog<bool>(
       context: context,
-      builder: (dialogContext) => AlertDialog(
+      builder: (ctx) => AlertDialog(
         title: Text('Aankoop registreren: ${signal.symbol}'),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             TextField(
               controller: amountController,
-              keyboardType: const TextInputType.numberWithOptions(decimal: true),
-              decoration: const InputDecoration(labelText: 'Totaal gekocht bedrag (€)'),
+              keyboardType:
+                  const TextInputType.numberWithOptions(decimal: true),
+              decoration:
+                  const InputDecoration(labelText: 'Totaal gekocht bedrag (€)'),
             ),
             TextField(
               controller: priceController,
-              keyboardType: const TextInputType.numberWithOptions(decimal: true),
-              decoration: const InputDecoration(labelText: 'Aankoopprijs per stuk'),
+              keyboardType:
+                  const TextInputType.numberWithOptions(decimal: true),
+              decoration:
+                  const InputDecoration(labelText: 'Aankoopprijs per stuk'),
             ),
             TextField(
               controller: quantityController,
-              keyboardType: const TextInputType.numberWithOptions(decimal: true),
-              decoration: const InputDecoration(labelText: 'Aantal stuks (optioneel)'),
+              keyboardType:
+                  const TextInputType.numberWithOptions(decimal: true),
+              decoration:
+                  const InputDecoration(labelText: 'Aantal stuks (optioneel)'),
             ),
           ],
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.of(dialogContext).pop(false),
-            child: const Text('Annuleren'),
-          ),
+              onPressed: () => Navigator.of(ctx).pop(false),
+              child: const Text('Annuleren')),
           FilledButton(
-            onPressed: () => Navigator.of(dialogContext).pop(true),
-            child: const Text('Opslaan'),
-          ),
+              onPressed: () => Navigator.of(ctx).pop(true),
+              child: const Text('Opslaan')),
         ],
       ),
     );
 
-    if (confirmed != true) {
-      return;
-    }
+    if (confirmed != true) return;
 
-    final amount = double.tryParse(amountController.text.replaceAll(',', '.'));
-    final price = double.tryParse(priceController.text.replaceAll(',', '.'));
+    final amount =
+        double.tryParse(amountController.text.replaceAll(',', '.'));
+    final price =
+        double.tryParse(priceController.text.replaceAll(',', '.'));
     final quantity = quantityController.text.trim().isEmpty
         ? null
         : double.tryParse(quantityController.text.replaceAll(',', '.'));
@@ -209,15 +223,17 @@ class _DashboardPageState extends State<DashboardPage> {
           backgroundColor: Colors.green[700],
         ),
       );
-
-      await Future.wait([_refreshHistory(), _refreshPortfolio(), _refreshHoldings()]);
+      await Future.wait([
+        _refreshHistory(),
+        _refreshPortfolio(),
+        _refreshHoldings(),
+      ]);
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('Tradefout: $e'),
-          backgroundColor: Colors.red[700],
-        ),
+            content: Text('Tradefout: $e'),
+            backgroundColor: Colors.red[700]),
       );
     }
   }
@@ -230,27 +246,25 @@ class _DashboardPageState extends State<DashboardPage> {
     try {
       final result = await ApiClient.learn();
       if (mounted) {
-        setState(() => _learnResult = result['parameters'] as Map<String, dynamic>?);
+        setState(
+            () => _learnResult = result['parameters'] as Map<String, dynamic>?);
       }
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('Leerfout: $e'),
-          backgroundColor: Colors.red[700],
-        ),
+            content: Text('Leerfout: $e'),
+            backgroundColor: Colors.red[700]),
       );
     } finally {
-      if (mounted) {
-        setState(() => _loadingLearn = false);
-      }
+      if (mounted) setState(() => _loadingLearn = false);
     }
   }
 
   Future<void> _sellAll() async {
     final confirmed = await showDialog<bool>(
       context: context,
-      builder: (dialogContext) => AlertDialog(
+      builder: (ctx) => AlertDialog(
         title: const Text('Alle posities verkopen'),
         content: const Text(
           'Einde dag: wil je alle open posities sluiten?\n'
@@ -258,12 +272,11 @@ class _DashboardPageState extends State<DashboardPage> {
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.of(dialogContext).pop(false),
-            child: const Text('Annuleren'),
-          ),
+              onPressed: () => Navigator.of(ctx).pop(false),
+              child: const Text('Annuleren')),
           FilledButton(
             style: FilledButton.styleFrom(backgroundColor: Colors.red),
-            onPressed: () => Navigator.of(dialogContext).pop(true),
+            onPressed: () => Navigator.of(ctx).pop(true),
             child: const Text('Verkoop alles'),
           ),
         ],
@@ -277,24 +290,24 @@ class _DashboardPageState extends State<DashboardPage> {
       if (!mounted) return;
       final sold = result['sold'] as int;
       final pl = (result['total_profit_loss'] as num).toDouble();
-      final isProfit = pl >= 0;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
-            '$sold posities verkocht | '
-            'Totaal P/L: €${pl.toStringAsFixed(2)}',
-          ),
-          backgroundColor: isProfit ? Colors.green[700] : Colors.red[700],
+              '$sold posities verkocht | Totaal P/L: €${pl.toStringAsFixed(2)}'),
+          backgroundColor: pl >= 0 ? Colors.green[700] : Colors.red[700],
         ),
       );
-      await Future.wait([_refreshHistory(), _refreshPortfolio(), _refreshHoldings()]);
+      await Future.wait([
+        _refreshHistory(),
+        _refreshPortfolio(),
+        _refreshHoldings(),
+      ]);
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('Fout bij verkopen: $e'),
-          backgroundColor: Colors.red[700],
-        ),
+            content: Text('Fout bij verkopen: $e'),
+            backgroundColor: Colors.red[700]),
       );
     }
   }
@@ -303,51 +316,59 @@ class _DashboardPageState extends State<DashboardPage> {
     final defaultQuantity = holding.suggestedSellFraction > 0
         ? holding.quantity * holding.suggestedSellFraction
         : holding.quantity;
-    final quantityController = TextEditingController(text: defaultQuantity.toStringAsFixed(6));
-    final priceController = TextEditingController(text: holding.currentPrice.toStringAsFixed(4));
+    final quantityController =
+        TextEditingController(text: defaultQuantity.toStringAsFixed(6));
+    final priceController =
+        TextEditingController(text: holding.currentPrice.toStringAsFixed(4));
 
     final confirmed = await showDialog<bool>(
       context: context,
-      builder: (dialogContext) => AlertDialog(
+      builder: (ctx) => AlertDialog(
         title: Text('Verkoop ${holding.symbol}'),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             TextField(
               controller: quantityController,
-              keyboardType: const TextInputType.numberWithOptions(decimal: true),
-              decoration: const InputDecoration(labelText: 'Aantal te verkopen'),
+              keyboardType:
+                  const TextInputType.numberWithOptions(decimal: true),
+              decoration:
+                  const InputDecoration(labelText: 'Aantal te verkopen'),
             ),
             TextField(
               controller: priceController,
-              keyboardType: const TextInputType.numberWithOptions(decimal: true),
-              decoration: const InputDecoration(labelText: 'Verkoopprijs per stuk'),
+              keyboardType:
+                  const TextInputType.numberWithOptions(decimal: true),
+              decoration: const InputDecoration(
+                  labelText: 'Verkoopprijs per stuk'),
             ),
           ],
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.of(dialogContext).pop(false),
-            child: const Text('Annuleren'),
-          ),
+              onPressed: () => Navigator.of(ctx).pop(false),
+              child: const Text('Annuleren')),
           FilledButton(
-            onPressed: () => Navigator.of(dialogContext).pop(true),
-            child: const Text('Verkoop'),
-          ),
+              onPressed: () => Navigator.of(ctx).pop(true),
+              child: const Text('Verkoop')),
         ],
       ),
     );
 
-    if (confirmed != true) {
-      return;
-    }
+    if (confirmed != true) return;
 
-    final quantity = double.tryParse(quantityController.text.replaceAll(',', '.'));
-    final price = double.tryParse(priceController.text.replaceAll(',', '.'));
-    if (quantity == null || quantity <= 0 || price == null || price <= 0) {
+    final quantity =
+        double.tryParse(quantityController.text.replaceAll(',', '.'));
+    final price =
+        double.tryParse(priceController.text.replaceAll(',', '.'));
+    if (quantity == null ||
+        quantity <= 0 ||
+        price == null ||
+        price <= 0) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Vul een geldige hoeveelheid en prijs in.')),
+        const SnackBar(
+            content: Text('Vul een geldige hoeveelheid en prijs in.')),
       );
       return;
     }
@@ -373,14 +394,17 @@ class _DashboardPageState extends State<DashboardPage> {
           backgroundColor: isProfit ? Colors.green[700] : Colors.red[700],
         ),
       );
-      await Future.wait([_refreshHistory(), _refreshPortfolio(), _refreshHoldings()]);
+      await Future.wait([
+        _refreshHistory(),
+        _refreshPortfolio(),
+        _refreshHoldings(),
+      ]);
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('Verkoopfout: $e'),
-          backgroundColor: Colors.red[700],
-        ),
+            content: Text('Verkoopfout: $e'),
+            backgroundColor: Colors.red[700]),
       );
     }
   }
@@ -396,9 +420,8 @@ class _DashboardPageState extends State<DashboardPage> {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('Alertfout: $e'),
-          backgroundColor: Colors.red[700],
-        ),
+            content: Text('Alertfout: $e'),
+            backgroundColor: Colors.red[700]),
       );
     }
   }
@@ -408,18 +431,22 @@ class _DashboardPageState extends State<DashboardPage> {
       final result = await ApiClient.sendDailySummary();
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Dagelijkse samenvatting: ${result.toString()}')),
+        SnackBar(
+            content: Text('Dagelijkse samenvatting: ${result.toString()}')),
       );
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('Summaryfout: $e'),
-          backgroundColor: Colors.red[700],
-        ),
+            content: Text('Summaryfout: $e'),
+            backgroundColor: Colors.red[700]),
       );
     }
   }
+
+  // ════════════════════════════════════════════════════════════════════
+  // BUILD
+  // ════════════════════════════════════════════════════════════════════
 
   @override
   Widget build(BuildContext context) {
@@ -440,29 +467,72 @@ class _DashboardPageState extends State<DashboardPage> {
             },
           ),
         ],
+        bottom: TabBar(
+          controller: _tabController,
+          isScrollable: true,
+          tabs: const [
+            Tab(icon: Icon(Icons.show_chart), text: 'Aandelen'),
+            Tab(icon: Icon(Icons.currency_bitcoin), text: 'Crypto'),
+            Tab(icon: Icon(Icons.diamond), text: 'Grondstoffen'),
+            Tab(icon: Icon(Icons.trending_up), text: 'Langetermijn'),
+            Tab(icon: Icon(Icons.account_balance_wallet), text: 'Portfolio'),
+          ],
+        ),
       ),
-      body: RefreshIndicator(
-        onRefresh: _refreshAll,
-        child: SingleChildScrollView(
-          physics: const AlwaysScrollableScrollPhysics(),
-          padding: const EdgeInsets.all(16),
-          child: Center(
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 980),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  _buildPortfolioCard(),
-                  const SizedBox(height: 20),
-                  _buildHoldingsCard(),
-                  const SizedBox(height: 20),
-                  _buildAdviceCard(),
-                  const SizedBox(height: 20),
-                  _buildActionsCard(),
-                  const SizedBox(height: 20),
-                  _buildHistoryCard(),
-                ],
-              ),
+      body: TabBarView(
+        controller: _tabController,
+        children: [
+          _buildMarketTab('us', 'Aandelen'),
+          _buildMarketTab('crypto', 'Crypto'),
+          _buildMarketTab('commodity', 'Grondstoffen'),
+          _buildLongtermTab(),
+          _buildPortfolioTab(),
+        ],
+      ),
+    );
+  }
+
+  // ════════════════════════════════════════════════════════════════════
+  // MARKET TAB (Aandelen / Crypto / Grondstoffen)
+  // ════════════════════════════════════════════════════════════════════
+
+  Widget _buildMarketTab(String market, String label) {
+    final marketSignals =
+        _signals.where((s) => s.market == market).toList();
+    final marketHoldings =
+        _holdings.where((h) => h.market == market).toList();
+
+    return RefreshIndicator(
+      onRefresh: () async {
+        await Future.wait([_refreshSignals(), _refreshHoldings()]);
+      },
+      child: SingleChildScrollView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        padding: const EdgeInsets.all(16),
+        child: Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 980),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                // -- Signalen --
+                _buildSignalsCard(
+                  title: 'Daytrades — $label',
+                  signals: marketSignals,
+                  loading: _loadingSignals,
+                  error: _signalError,
+                  onRefresh: _refreshSignals,
+                ),
+                const SizedBox(height: 16),
+                // -- Posities --
+                _buildHoldingsCard(
+                  title: 'Posities — $label',
+                  holdings: marketHoldings,
+                  loading: _loadingHoldings,
+                  onRefresh: _refreshHoldings,
+                  showSellAll: marketHoldings.isNotEmpty,
+                ),
+              ],
             ),
           ),
         ),
@@ -470,111 +540,81 @@ class _DashboardPageState extends State<DashboardPage> {
     );
   }
 
-  Widget _buildPortfolioCard() {
-    final loggedIn = ApiClient.isLoggedIn();
-    return Card(
-      child: Padding(
+  // ════════════════════════════════════════════════════════════════════
+  // LANGETERMIJN TAB
+  // ════════════════════════════════════════════════════════════════════
+
+  Widget _buildLongtermTab() {
+    return RefreshIndicator(
+      onRefresh: _refreshLongtermSignals,
+      child: SingleChildScrollView(
+        physics: const AlwaysScrollableScrollPhysics(),
         padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        child: Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 980),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                Text('Portfolio', style: Theme.of(context).textTheme.titleLarge),
-                IconButton(
-                  icon: const Icon(Icons.refresh),
-                  onPressed: _loadingPortfolio ? null : _refreshPortfolio,
+                _buildSignalsCard(
+                  title: 'Langetermijn adviezen — alle markten',
+                  signals: _longtermSignals,
+                  loading: _loadingLongterm,
+                  error: _longtermError,
+                  onRefresh: _refreshLongtermSignals,
+                  isLongterm: true,
                 ),
               ],
             ),
-            const Divider(),
-            if (!loggedIn)
-              const Text('Log in om je portfolio en trade limieten te bekijken.')
-            else if (_loadingPortfolio)
-              const Padding(
-                padding: EdgeInsets.all(12),
-                child: CircularProgressIndicator(),
-              )
-            else if (_portfolio == null)
-              const Text('Portfolio nog niet geladen.')
-            else
-              Wrap(
-                spacing: 20,
-                runSpacing: 8,
-                children: [
-                  Text('Start: €${(_portfolio!['start_balance'] as num).toStringAsFixed(2)}'),
-                  Text('Nu: €${(_portfolio!['current_balance'] as num).toStringAsFixed(2)}'),
-                  Text('Cash: €${(_portfolio!['available_cash'] as num).toStringAsFixed(2)}'),
-                  Text('Marktwaarde: €${(_portfolio!['market_value'] as num).toStringAsFixed(2)}'),
-                  Text('P/L: ${(_portfolio!['total_profit_loss'] as num).toStringAsFixed(2)}'),
-                  Text('Posities: ${_portfolio!['holdings_count']}'),
-                  Text('Trades vandaag: ${_portfolio!['daily_trade_count']} / 50'),
-                ],
-              ),
-          ],
+          ),
         ),
       ),
     );
   }
 
-  Widget _buildHoldingsCard() {
-    final loggedIn = ApiClient.isLoggedIn();
-    final stockHoldings = _holdings.where((holding) => holding.market != 'crypto').toList();
-    final cryptoHoldings = _holdings.where((holding) => holding.market == 'crypto').toList();
-    return Card(
-      child: Padding(
+  // ════════════════════════════════════════════════════════════════════
+  // PORTFOLIO TAB
+  // ════════════════════════════════════════════════════════════════════
+
+  Widget _buildPortfolioTab() {
+    return RefreshIndicator(
+      onRefresh: _refreshAll,
+      child: SingleChildScrollView(
+        physics: const AlwaysScrollableScrollPhysics(),
         padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        child: Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 980),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                Text('Verkoopadvies voor jouw posities', style: Theme.of(context).textTheme.titleLarge),
-                Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    if (_holdings.isNotEmpty)
-                      FilledButton.icon(
-                        style: FilledButton.styleFrom(backgroundColor: Colors.red),
-                        icon: const Icon(Icons.sell, size: 18),
-                        label: const Text('Verkoop alles'),
-                        onPressed: _sellAll,
-                      ),
-                    const SizedBox(width: 8),
-                    IconButton(
-                      icon: const Icon(Icons.refresh),
-                      onPressed: _loadingHoldings ? null : _refreshHoldings,
-                    ),
-                  ],
-                ),
+                _buildPortfolioCard(),
+                const SizedBox(height: 16),
+                _buildAllHoldingsCard(),
+                const SizedBox(height: 16),
+                _buildActionsCard(),
+                const SizedBox(height: 16),
+                _buildHistoryCard(),
               ],
             ),
-            const Divider(),
-            if (!loggedIn)
-              const Text('Log in om verkoopadvies voor je bezittingen te bekijken.')
-            else if (_loadingHoldings)
-              const Padding(
-                padding: EdgeInsets.all(12),
-                child: CircularProgressIndicator(),
-              )
-            else if (_holdings.isEmpty)
-              const Text('Nog geen bezittingen geregistreerd.')
-            else ...[
-              _buildHoldingSection('Aandelen die je bezit', stockHoldings),
-              const SizedBox(height: 16),
-              _buildHoldingSection('Crypto die je bezit', cryptoHoldings),
-            ],
-          ],
+          ),
         ),
       ),
     );
   }
 
-  Widget _buildAdviceCard() {
-    final stockSignals = _signals.where((signal) => signal.market != 'crypto').toList();
-    final cryptoSignals = _signals.where((signal) => signal.market == 'crypto').toList();
+  // ════════════════════════════════════════════════════════════════════
+  // SHARED WIDGETS
+  // ════════════════════════════════════════════════════════════════════
+
+  Widget _buildSignalsCard({
+    required String title,
+    required List<Signal> signals,
+    required bool loading,
+    String? error,
+    required VoidCallback onRefresh,
+    bool isLongterm = false,
+  }) {
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(16),
@@ -584,74 +624,71 @@ class _DashboardPageState extends State<DashboardPage> {
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                Text('Daytrades — koop vandaag, verkoop vandaag', style: Theme.of(context).textTheme.titleLarge),
+                Expanded(
+                  child: Text(title,
+                      style: Theme.of(context).textTheme.titleLarge),
+                ),
                 IconButton(
                   icon: const Icon(Icons.refresh),
-                  onPressed: _loadingSignals ? null : _refreshSignals,
+                  onPressed: loading ? null : onRefresh,
                 ),
               ],
             ),
             const Divider(),
-            if (_loadingSignals)
+            if (loading)
               const Padding(
                 padding: EdgeInsets.all(12),
                 child: Center(child: CircularProgressIndicator()),
               )
-            else if (_signalError != null)
-              Text(_signalError!, style: TextStyle(color: Theme.of(context).colorScheme.error))
-            else if (_signals.isEmpty)
-              const Text('Er zijn nu geen daytrade-kansen volgens het model.')
-            else ...[
-              _buildSignalSection('Aandelen', stockSignals),
-              const SizedBox(height: 16),
-              _buildSignalSection('Crypto', cryptoSignals),
-            ],
+            else if (error != null)
+              Text(error,
+                  style:
+                      TextStyle(color: Theme.of(context).colorScheme.error))
+            else if (signals.isEmpty)
+              Text(isLongterm
+                  ? 'Geen langetermijn koopkansen gevonden.'
+                  : 'Geen daytrade-kansen op dit moment.')
+            else
+              ListView.separated(
+                shrinkWrap: true,
+                physics: const NeverScrollableScrollPhysics(),
+                itemCount: signals.length,
+                separatorBuilder: (_, __) => const Divider(height: 1),
+                itemBuilder: (_, i) =>
+                    _buildSignalTile(signals[i], isLongterm: isLongterm),
+              ),
           ],
         ),
       ),
     );
   }
 
-  Widget _buildSignalSection(String title, List<Signal> signals) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(title, style: Theme.of(context).textTheme.titleMedium),
-        const SizedBox(height: 8),
-        if (signals.isEmpty)
-          Text('Geen daytrades beschikbaar voor $title.')
-        else
-          ListView.separated(
-            shrinkWrap: true,
-            physics: const NeverScrollableScrollPhysics(),
-            itemCount: signals.length,
-            separatorBuilder: (_, __) => const Divider(height: 1),
-            itemBuilder: (_, i) => _buildSignalTile(signals[i]),
-          ),
-      ],
-    );
-  }
-
-  Widget _buildSignalTile(Signal signal) {
+  Widget _buildSignalTile(Signal signal, {bool isLongterm = false}) {
     final loggedIn = ApiClient.isLoggedIn();
-    const actionColor = Colors.green;
+    final actionColor = Colors.green;
+    final horizonText = isLongterm
+        ? '~${signal.expectedDays} dagen'
+        : 'vandaag (daytrade)';
+    final marketLabel = _marketLabel(signal.market);
 
     return ListTile(
       leading: CircleAvatar(
         backgroundColor: actionColor,
-        child: const Text('↑', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+        child: const Text('↑',
+            style:
+                TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
       ),
       title: Text(
-        '${signal.symbol} (${signal.market.toUpperCase()})  —  '
+        '${signal.symbol} ($marketLabel)  —  '
         'BUY @ ${signal.price.toStringAsFixed(2)}',
       ),
       subtitle: Text(
-        '${signal.rankLabel.isEmpty ? 'Daytrade' : signal.rankLabel} | '
+        '${signal.rankLabel.isEmpty ? (isLongterm ? 'Langetermijn' : 'Daytrade') : signal.rankLabel} | '
         'score ${signal.rankingScore.toStringAsFixed(1)}\n'
         'Verwacht: +${signal.expectedReturnPct.toStringAsFixed(2)}% → '
         'doel €${signal.targetPrice.toStringAsFixed(2)} | '
         'winst ~€${signal.expectedProfit.toStringAsFixed(0)} per €1000 | '
-        'vandaag (daytrade)\n'
+        '$horizonText\n'
         'Stop-loss: ${signal.riskPct.toStringAsFixed(2)}% | '
         'Zekerheid: ${(signal.confidence * 100).toStringAsFixed(0)}%',
       ),
@@ -666,28 +703,75 @@ class _DashboardPageState extends State<DashboardPage> {
     );
   }
 
-  Widget _buildHoldingSection(String title, List<Holding> holdings) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(title, style: Theme.of(context).textTheme.titleMedium),
-        const SizedBox(height: 8),
-        if (holdings.isEmpty)
-          Text('Geen posities beschikbaar in $title.')
-        else
-          ListView.separated(
-            shrinkWrap: true,
-            physics: const NeverScrollableScrollPhysics(),
-            itemCount: holdings.length,
-            separatorBuilder: (_, __) => const Divider(height: 1),
-            itemBuilder: (_, index) => _buildHoldingTile(holdings[index]),
-          ),
-      ],
+  Widget _buildHoldingsCard({
+    required String title,
+    required List<Holding> holdings,
+    required bool loading,
+    required VoidCallback onRefresh,
+    bool showSellAll = false,
+  }) {
+    final loggedIn = ApiClient.isLoggedIn();
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Expanded(
+                  child: Text(title,
+                      style: Theme.of(context).textTheme.titleLarge),
+                ),
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (showSellAll)
+                      FilledButton.icon(
+                        style: FilledButton.styleFrom(
+                            backgroundColor: Colors.red),
+                        icon: const Icon(Icons.sell, size: 18),
+                        label: const Text('Verkoop alles'),
+                        onPressed: _sellAll,
+                      ),
+                    const SizedBox(width: 8),
+                    IconButton(
+                      icon: const Icon(Icons.refresh),
+                      onPressed: loading ? null : onRefresh,
+                    ),
+                  ],
+                ),
+              ],
+            ),
+            const Divider(),
+            if (!loggedIn)
+              const Text(
+                  'Log in om verkoopadvies voor je bezittingen te bekijken.')
+            else if (loading)
+              const Padding(
+                padding: EdgeInsets.all(12),
+                child: CircularProgressIndicator(),
+              )
+            else if (holdings.isEmpty)
+              const Text('Geen posities in deze categorie.')
+            else
+              ListView.separated(
+                shrinkWrap: true,
+                physics: const NeverScrollableScrollPhysics(),
+                itemCount: holdings.length,
+                separatorBuilder: (_, __) => const Divider(height: 1),
+                itemBuilder: (_, i) => _buildHoldingTile(holdings[i]),
+              ),
+          ],
+        ),
+      ),
     );
   }
 
   Widget _buildHoldingTile(Holding holding) {
-    final pnlColor = holding.unrealizedProfitLoss >= 0 ? Colors.green : Colors.red;
+    final pnlColor =
+        holding.unrealizedProfitLoss >= 0 ? Colors.green : Colors.red;
     final buttonLabel = holding.recommendation == 'take_partial_profit'
         ? 'Neem winst'
         : 'Verkoop';
@@ -705,11 +789,12 @@ class _DashboardPageState extends State<DashboardPage> {
               : holding.recommendation == 'take_partial_profit'
                   ? '%'
                   : '•',
-          style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+          style: const TextStyle(
+              color: Colors.white, fontWeight: FontWeight.bold),
         ),
       ),
       title: Text(
-        '${holding.symbol} (${holding.market.toUpperCase()}) | '
+        '${holding.symbol} (${_marketLabel(holding.market)}) | '
         '${holding.quantity.toStringAsFixed(4)} stuks',
       ),
       subtitle: Text(
@@ -726,15 +811,129 @@ class _DashboardPageState extends State<DashboardPage> {
         children: [
           Text(
             '${holding.unrealizedProfitLoss >= 0 ? '+' : ''}${holding.unrealizedProfitLoss.toStringAsFixed(2)}',
-            style: TextStyle(color: pnlColor, fontWeight: FontWeight.bold),
+            style:
+                TextStyle(color: pnlColor, fontWeight: FontWeight.bold),
           ),
-          Text('${holding.unrealizedProfitLossPct.toStringAsFixed(2)}%'),
+          Text(
+              '${holding.unrealizedProfitLossPct.toStringAsFixed(2)}%'),
           TextButton(
             onPressed: () => _sellHolding(holding),
             child: Text(buttonLabel),
           ),
         ],
       ),
+    );
+  }
+
+  // ════════════════════════════════════════════════════════════════════
+  // PORTFOLIO TAB WIDGETS
+  // ════════════════════════════════════════════════════════════════════
+
+  Widget _buildPortfolioCard() {
+    final loggedIn = ApiClient.isLoggedIn();
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text('Portfolio overzicht',
+                    style: Theme.of(context).textTheme.titleLarge),
+                IconButton(
+                  icon: const Icon(Icons.refresh),
+                  onPressed: _loadingPortfolio ? null : _refreshPortfolio,
+                ),
+              ],
+            ),
+            const Divider(),
+            if (!loggedIn)
+              const Text('Log in om je portfolio te bekijken.')
+            else if (_loadingPortfolio)
+              const Padding(
+                padding: EdgeInsets.all(12),
+                child: CircularProgressIndicator(),
+              )
+            else if (_portfolio == null)
+              const Text('Portfolio nog niet geladen.')
+            else ...[
+              Wrap(
+                spacing: 20,
+                runSpacing: 8,
+                children: [
+                  Text(
+                      'Start: €${(_portfolio!['start_balance'] as num).toStringAsFixed(2)}'),
+                  Text(
+                      'Nu: €${(_portfolio!['current_balance'] as num).toStringAsFixed(2)}'),
+                  Text(
+                      'Cash: €${(_portfolio!['available_cash'] as num).toStringAsFixed(2)}'),
+                  Text(
+                      'Marktwaarde: €${(_portfolio!['market_value'] as num).toStringAsFixed(2)}'),
+                  Text(
+                      'Totaal P/L: €${(_portfolio!['total_profit_loss'] as num).toStringAsFixed(2)}'),
+                  Text('Posities: ${_portfolio!['holdings_count']}'),
+                  Text(
+                      'Trades vandaag: ${_portfolio!['daily_trade_count']} / 50'),
+                ],
+              ),
+              const SizedBox(height: 12),
+              _buildDailyPnlRow(),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildDailyPnlRow() {
+    final realized =
+        (_portfolio?['daily_realized_pnl'] as num?)?.toDouble() ?? 0.0;
+    final unrealized =
+        (_portfolio?['daily_unrealized_pnl'] as num?)?.toDouble() ?? 0.0;
+    final total =
+        (_portfolio?['daily_total_pnl'] as num?)?.toDouble() ?? 0.0;
+    final totalColor = total >= 0 ? Colors.green : Colors.red;
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: totalColor.withOpacity(0.1),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('Dagelijkse P/L',
+              style: Theme.of(context).textTheme.titleMedium),
+          const SizedBox(height: 4),
+          Wrap(
+            spacing: 20,
+            runSpacing: 4,
+            children: [
+              Text('Gerealiseerd: €${realized.toStringAsFixed(2)}'),
+              Text('Ongerealiseerd: €${unrealized.toStringAsFixed(2)}'),
+              Text(
+                'Totaal: €${total.toStringAsFixed(2)}',
+                style: TextStyle(
+                    color: totalColor, fontWeight: FontWeight.bold),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildAllHoldingsCard() {
+    return _buildHoldingsCard(
+      title: 'Alle posities',
+      holdings: _holdings,
+      loading: _loadingHoldings,
+      onRefresh: _refreshHoldings,
+      showSellAll: _holdings.isNotEmpty,
     );
   }
 
@@ -746,10 +945,12 @@ class _DashboardPageState extends State<DashboardPage> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('Leren & Alerts', style: Theme.of(context).textTheme.titleLarge),
+            Text('Leren & Alerts',
+                style: Theme.of(context).textTheme.titleLarge),
             const Divider(),
             if (!loggedIn)
-              const Text('Log in om leren en e-mailalerts te gebruiken.')
+              const Text(
+                  'Log in om leren en e-mailalerts te gebruiken.')
             else
               Wrap(
                 spacing: 12,
@@ -760,14 +961,16 @@ class _DashboardPageState extends State<DashboardPage> {
                         ? const SizedBox(
                             width: 16,
                             height: 16,
-                            child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                            child: CircularProgressIndicator(
+                                strokeWidth: 2, color: Colors.white),
                           )
                         : const Icon(Icons.psychology),
                     label: const Text('Leer van markt + trades'),
                     onPressed: _loadingLearn ? null : _learn,
                   ),
                   OutlinedButton.icon(
-                    icon: const Icon(Icons.notifications_active_outlined),
+                    icon: const Icon(
+                        Icons.notifications_active_outlined),
                     label: const Text('Stuur realtime alerts'),
                     onPressed: _sendRealtimeAlerts,
                   ),
@@ -812,10 +1015,12 @@ class _DashboardPageState extends State<DashboardPage> {
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                Text('Transactiegeschiedenis', style: Theme.of(context).textTheme.titleLarge),
+                Text('Transactiegeschiedenis',
+                    style: Theme.of(context).textTheme.titleLarge),
                 IconButton(
                   icon: const Icon(Icons.refresh),
-                  onPressed: _loadingHistory ? null : _refreshHistory,
+                  onPressed:
+                      _loadingHistory ? null : _refreshHistory,
                 ),
               ],
             ),
@@ -845,7 +1050,9 @@ class _DashboardPageState extends State<DashboardPage> {
                           : Colors.red;
                   return ListTile(
                     leading: Icon(
-                      trade.action == 'buy' ? Icons.add_shopping_cart : Icons.sell,
+                      trade.action == 'buy'
+                          ? Icons.add_shopping_cart
+                          : Icons.sell,
                       color: iconColor,
                     ),
                     title: Text(
@@ -872,5 +1079,22 @@ class _DashboardPageState extends State<DashboardPage> {
         ),
       ),
     );
+  }
+
+  // ════════════════════════════════════════════════════════════════════
+  // HELPERS
+  // ════════════════════════════════════════════════════════════════════
+
+  String _marketLabel(String market) {
+    switch (market) {
+      case 'us':
+        return 'US';
+      case 'crypto':
+        return 'CRYPTO';
+      case 'commodity':
+        return 'GRONDSTOF';
+      default:
+        return market.toUpperCase();
+    }
   }
 }

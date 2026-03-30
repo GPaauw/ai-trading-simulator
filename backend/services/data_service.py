@@ -253,6 +253,16 @@ class DataService:
             ).fetchone()
         return int(row["count"]) if row else 0
 
+    def get_daily_realized_pnl(self) -> float:
+        """Bereken de gerealiseerde winst/verlies van vandaag (alleen verkopen)."""
+        today = date.today().isoformat()
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT COALESCE(SUM(profit_loss), 0) AS total FROM trade_history WHERE timestamp LIKE ? AND action = 'sell'",
+                (f"{today}%",),
+            ).fetchone()
+        return float(row["total"]) if row else 0.0
+
     def get_portfolio(self, holdings: List[HoldingView] | None = None) -> dict:
         holdings = holdings or []
         invested_value = sum(h.invested_amount for h in holdings)

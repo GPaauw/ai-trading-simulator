@@ -146,6 +146,24 @@ class ApiClient {
     return jsonDecode(response.body) as Map<String, dynamic>;
   }
 
+  static Future<List<Signal>> getLongtermSignals() async {
+    final response = await http.get(Uri.parse('$kBackendUrl/signals/longterm'), headers: _headers());
+    if (response.statusCode != 200) {
+      throw Exception('Fout bij ophalen langetermijn signalen (${response.statusCode})');
+    }
+    final List<dynamic> data = jsonDecode(response.body) as List<dynamic>;
+    return data.map((e) => Signal.fromJson(e as Map<String, dynamic>)).toList();
+  }
+
+  static Future<List<Signal>> getPremarketSignals() async {
+    final response = await http.get(Uri.parse('$kBackendUrl/signals/premarket'), headers: _headers());
+    if (response.statusCode != 200) {
+      throw Exception('Fout bij ophalen pre-market signalen (${response.statusCode})');
+    }
+    final List<dynamic> data = jsonDecode(response.body) as List<dynamic>;
+    return data.map((e) => Signal.fromJson(e as Map<String, dynamic>)).toList();
+  }
+
   static String _extractDetail(String body, String fallback) {
     try {
       final map = jsonDecode(body) as Map<String, dynamic>;

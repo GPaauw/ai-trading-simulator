@@ -13,6 +13,7 @@ class Signal {
   final double rankingScore;
   final String rankLabel;
   final String reason;
+  final String strategy;
 
   Signal({
     required this.id,
@@ -29,6 +30,7 @@ class Signal {
     required this.rankingScore,
     required this.rankLabel,
     required this.reason,
+    required this.strategy,
   });
 
   factory Signal.fromJson(Map<String, dynamic> json) {
@@ -47,6 +49,7 @@ class Signal {
       rankingScore: (json['ranking_score'] as num?)?.toDouble() ?? 0.0,
       rankLabel: (json['rank_label'] as String?) ?? '',
       reason: (json['reason'] as String?) ?? '',
+      strategy: (json['strategy'] as String?) ?? 'daytrade',
     );
   }
 }
