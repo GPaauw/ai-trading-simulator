@@ -107,6 +107,15 @@ class _DashboardPageState extends State<DashboardPage>
     }
   }
 
+  Future<void> _registerBuyFromAiSignal(Map<String, dynamic> signal) async {
+    // Maak een Signal-object van de AI-data zodat we _registerBuyFromSignal kunnen hergebruiken
+    final s = Signal.fromJson({
+      ...signal,
+      'id': signal['id'] ?? signal['symbol'] ?? '',
+    });
+    await _registerBuyFromSignal(s);
+  }
+
   Future<void> _refreshHoldings() async {
     if (!ApiClient.isLoggedIn()) return;
     setState(() => _loadingHoldings = true);
@@ -558,7 +567,7 @@ class _DashboardPageState extends State<DashboardPage>
                               color: Theme.of(context).colorScheme.error))
                     else if (_aiSignals.isEmpty)
                       const Text(
-                          'Geen AI-analyse beschikbaar. Configureer GROQ_API_KEY op de server.')
+                          'Geen signalen beschikbaar. Data wordt geladen...')
                     else
                       ListView.separated(
                         shrinkWrap: true,
@@ -585,17 +594,21 @@ class _DashboardPageState extends State<DashboardPage>
     final aiScore = (signal['ai_score'] as num?)?.toInt() ?? 0;
     final aiAnalysis = signal['ai_analysis'] as String? ?? '';
     final aiRisk = signal['ai_risk'] as String? ?? '';
+    final action = signal['action'] as String? ?? 'buy';
     final confidence = (signal['confidence'] as num?)?.toDouble() ?? 0.0;
     final expectedReturn =
         (signal['expected_return_pct'] as num?)?.toDouble() ?? 0.0;
     final targetPrice =
         (signal['target_price'] as num?)?.toDouble() ?? 0.0;
+    final rankLabel = signal['rank_label'] as String? ?? '';
 
     final scoreColor = aiScore >= 75
         ? Colors.green
         : aiScore >= 50
             ? Colors.orange
             : Colors.red;
+    final actionColor = action == 'buy' ? Colors.green : (action == 'sell' ? Colors.red : Colors.grey);
+    final loggedIn = ApiClient.isLoggedIn();
 
     return ListTile(
       leading: CircleAvatar(
@@ -607,16 +620,17 @@ class _DashboardPageState extends State<DashboardPage>
         ),
       ),
       title: Text(
-        '$symbol (${_marketLabel(market)}) — BUY @ ${price.toStringAsFixed(2)}',
+        '$symbol (${_marketLabel(market)}) — ${action.toUpperCase()} @ ${price.toStringAsFixed(2)}',
       ),
       subtitle: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           const SizedBox(height: 4),
-          Text(
-            aiAnalysis,
-            style: const TextStyle(fontStyle: FontStyle.italic),
-          ),
+          if (aiAnalysis.isNotEmpty)
+            Text(
+              aiAnalysis,
+              style: const TextStyle(fontStyle: FontStyle.italic),
+            ),
           if (aiRisk.isNotEmpty) ...[
             const SizedBox(height: 2),
             Text(
@@ -626,6 +640,7 @@ class _DashboardPageState extends State<DashboardPage>
           ],
           const SizedBox(height: 4),
           Text(
+            '${rankLabel.isNotEmpty ? '$rankLabel | ' : ''}'
             'Doel: €${targetPrice.toStringAsFixed(2)} | '
             '+${expectedReturn.toStringAsFixed(2)}% | '
             'Zekerheid: ${(confidence * 100).toStringAsFixed(0)}%',
@@ -634,6 +649,13 @@ class _DashboardPageState extends State<DashboardPage>
         ],
       ),
       isThreeLine: true,
+      trailing: loggedIn && action == 'buy'
+          ? FilledButton(
+              style: FilledButton.styleFrom(backgroundColor: actionColor),
+              onPressed: () => _registerBuyFromAiSignal(signal),
+              child: const Text('Ik kocht dit'),
+            )
+          : const SizedBox.shrink(),
     );
   }
 
@@ -810,32 +832,51 @@ class _DashboardPageState extends State<DashboardPage>
 
   Widget _buildSignalTile(Signal signal, {bool isLongterm = false}) {
     final loggedIn = ApiClient.isLoggedIn();
-    final actionColor = Colors.green;
+    final actionColor = signal.action == 'buy' ? Colors.green : (signal.action == 'sell' ? Colors.red : Colors.grey);
     final horizonText = isLongterm
         ? '~${signal.expectedDays} dagen'
         : 'vandaag (daytrade)';
     final marketLabel = _marketLabel(signal.market);
+    final hasAi = signal.aiScore > 0;
 
     return ListTile(
       leading: CircleAvatar(
-        backgroundColor: actionColor,
-        child: const Text('↑',
-            style:
-                TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+        backgroundColor: hasAi
+            ? (signal.aiScore >= 75 ? Colors.green : (signal.aiScore >= 50 ? Colors.orange : Colors.red))
+            : actionColor,
+        child: hasAi
+            ? Text('${signal.aiScore}',
+                style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13))
+            : Text(signal.action == 'buy' ? '↑' : '↓',
+                style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
       ),
       title: Text(
         '${signal.symbol} ($marketLabel)  —  '
-        'BUY @ ${signal.price.toStringAsFixed(2)}',
+        '${signal.action.toUpperCase()} @ ${signal.price.toStringAsFixed(2)}',
       ),
-      subtitle: Text(
-        '${signal.rankLabel.isEmpty ? (isLongterm ? 'Langetermijn' : 'Daytrade') : signal.rankLabel} | '
-        'score ${signal.rankingScore.toStringAsFixed(1)}\n'
-        'Verwacht: +${signal.expectedReturnPct.toStringAsFixed(2)}% → '
-        'doel €${signal.targetPrice.toStringAsFixed(2)} | '
-        'winst ~€${signal.expectedProfit.toStringAsFixed(0)} per €1000 | '
-        '$horizonText\n'
-        'Stop-loss: ${signal.riskPct.toStringAsFixed(2)}% | '
-        'Zekerheid: ${(signal.confidence * 100).toStringAsFixed(0)}%',
+      subtitle: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (hasAi && signal.aiAnalysis.isNotEmpty) ...[
+            const SizedBox(height: 4),
+            Text(signal.aiAnalysis, style: const TextStyle(fontStyle: FontStyle.italic)),
+          ],
+          if (hasAi && signal.aiRisk.isNotEmpty) ...[
+            const SizedBox(height: 2),
+            Text('Risico: ${signal.aiRisk}',
+                style: TextStyle(color: Colors.red[300], fontSize: 12)),
+          ],
+          Text(
+            '${signal.rankLabel.isEmpty ? (isLongterm ? 'Langetermijn' : 'Daytrade') : signal.rankLabel} | '
+            'score ${signal.rankingScore.toStringAsFixed(1)}\n'
+            'Verwacht: +${signal.expectedReturnPct.toStringAsFixed(2)}% → '
+            'doel €${signal.targetPrice.toStringAsFixed(2)} | '
+            'winst ~€${signal.expectedProfit.toStringAsFixed(0)} per €1000 | '
+            '$horizonText\n'
+            'Stop-loss: ${signal.riskPct.toStringAsFixed(2)}% | '
+            'Zekerheid: ${(signal.confidence * 100).toStringAsFixed(0)}%',
+          ),
+        ],
       ),
       isThreeLine: true,
       trailing: loggedIn

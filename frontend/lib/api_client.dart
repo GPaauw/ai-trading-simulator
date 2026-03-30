@@ -39,7 +39,12 @@ class ApiClient {
     }
     final List<dynamic> data = jsonDecode(response.body) as List<dynamic>;
     return data
-        .map((e) => Signal.fromJson(e as Map<String, dynamic>))
+        .map((e) {
+          final json = e as Map<String, dynamic>;
+          // Zorg dat id altijd aanwezig is (AI response kan dict zijn zonder id)
+          json['id'] ??= json['symbol'] ?? '';
+          return Signal.fromJson(json);
+        })
         .toList();
   }
 

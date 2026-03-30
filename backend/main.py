@@ -93,9 +93,7 @@ def get_premarket_signals() -> List[Signal]:
 
 @app.get("/signals/ai")
 def get_ai_signals() -> List[Dict[str, Any]]:
-    """Top signalen verrijkt met AI-analyse via Groq."""
-    if not ai_analysis_service.is_available():
-        raise HTTPException(status_code=503, detail="GROQ_API_KEY niet geconfigureerd")
+    """Top signalen verrijkt met AI-analyse via Groq (fallback: technische analyse)."""
     # Gebruik snelle watchlist voor snelle response
     buy_signals = advice_engine.build_ranked_buy_signals(
         watchlist=market_data_service.get_fast_watchlist(),
@@ -103,11 +101,14 @@ def get_ai_signals() -> List[Dict[str, Any]]:
     if not buy_signals:
         return []
     signal_dicts = [s.model_dump() for s in buy_signals[:10]]
-    return ai_analysis_service.analyze_signals(signal_dicts)
+    # Haal trade-historie op voor AI learning
+    trade_history = data_service.get_trade_history()
+    return ai_analysis_service.analyze_signals(signal_dicts, trade_history=trade_history)
 
 
-@app.get("/advice", response_model=List[Signal])
-def get_advice() -> List[Signal]:
+@app.get("/advice")
+def get_advice() -> Any:
+    """Alle koopadviezen, verrijkt met AI-analyse als GROQ_API_KEY beschikbaar is."""
     return _build_buy_advice()
 
 
@@ -290,7 +291,7 @@ def _build_holdings_view() -> List[HoldingView]:
     return sorted(views, key=lambda item: item.unrealized_profit_loss_pct, reverse=True)
 
 
-def _build_buy_advice() -> List[Signal]:
+def _build_buy_advice() -> List:
     if market_data_service.has_warm_stock_cache():
         buy_signals = advice_engine.build_ranked_buy_signals()
     else:
@@ -298,10 +299,20 @@ def _build_buy_advice() -> List[Signal]:
         buy_signals = advice_engine.build_ranked_buy_signals(
             watchlist=market_data_service.get_fast_watchlist(),
         )
-    return sorted(
+    sorted_signals = sorted(
         buy_signals,
         key=lambda signal: (0 if signal.market == "us" or signal.market == "eu" else 1, -signal.ranking_score),
     )
+
+    # Verrijk alle signalen met AI-analyse (incl. learning van trade-historie)
+    if ai_analysis_service.is_available():
+        signal_dicts = [s.model_dump() for s in sorted_signals]
+        trade_history = data_service.get_trade_history()
+        ai_results = ai_analysis_service.analyze_signals(signal_dicts, trade_history=trade_history)
+        if ai_results:
+            return ai_results
+
+    return sorted_signals
 
 
 def _build_sell_advice() -> List[HoldingView]:

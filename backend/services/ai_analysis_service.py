@@ -1,10 +1,15 @@
-"""AI-analyse service: gebruikt Groq (gratis) voor diepere signaalanalyse."""
+"""AI-analyse service: primaire analyse-engine via Groq (gratis LLM).
+
+Alle signalen gaan door het AI model. Het model leert van eerdere trades
+(winst/verlies) en past zijn adviezen daarop aan.
+Fallback: als GROQ_API_KEY ontbreekt worden technische signalen ongewijzigd doorgestuurd.
+"""
 
 import json
 import logging
 import os
 import time
-from typing import Dict, List
+from typing import Dict, List, Optional
 from urllib.request import Request, urlopen
 
 logger = logging.getLogger(__name__)
@@ -17,75 +22,195 @@ _CACHE_TTL = 5 * 60  # 5 minuten
 class AiAnalysisService:
     def __init__(self) -> None:
         self._cache: Dict[str, Dict] = {}
+        self._trade_lessons: str = ""
 
     def _get_api_key(self) -> str | None:
-        return os.environ.get("GROQ_API_KEY")
+        key = os.environ.get("GROQ_API_KEY", "").strip()
+        return key if key else None
 
     def is_available(self) -> bool:
         return bool(self._get_api_key())
 
+    # ------------------------------------------------------------------
+    # Leren van trade-historie
+    # ------------------------------------------------------------------
+
+    def update_trade_lessons(self, trades: list) -> str:
+        """Analyseer afgelopen trades en genereer lessen voor toekomstige analyses."""
+        trade_dicts: List[Dict] = []
+        for t in trades:
+            if hasattr(t, "model_dump"):
+                trade_dicts.append(t.model_dump())
+            elif isinstance(t, dict):
+                trade_dicts.append(t)
+
+        if not trade_dicts:
+            self._trade_lessons = ""
+            return ""
+
+        recent = trade_dicts[-30:]
+        winners = [t for t in recent if (t.get("profit_loss") or 0) > 0]
+        losers = [t for t in recent if (t.get("profit_loss") or 0) < 0]
+        total_pl = sum(t.get("profit_loss", 0) for t in recent)
+
+        parts: list[str] = [
+            f"Totaal trades: {len(recent)}, winnaars: {len(winners)}, "
+            f"verliezers: {len(losers)}, netto P/L: €{total_pl:.2f}.",
+        ]
+
+        top_winners = sorted(winners, key=lambda t: t.get("profit_loss", 0), reverse=True)[:5]
+        top_losers = sorted(losers, key=lambda t: t.get("profit_loss", 0))[:5]
+
+        if top_winners:
+            w = ", ".join(f"{t['symbol']} (+€{t['profit_loss']:.2f})" for t in top_winners)
+            parts.append(f"Beste trades: {w}.")
+        if top_losers:
+            l = ", ".join(f"{t['symbol']} (€{t['profit_loss']:.2f})" for t in top_losers)
+            parts.append(f"Slechtste trades: {l}.")
+
+        if len(losers) > len(winners) and len(recent) >= 5:
+            parts.append("WAARSCHUWING: meer verliezers dan winnaars — wees selectiever.")
+        if losers:
+            avg_loss = sum(t.get("profit_loss", 0) for t in losers) / len(losers)
+            parts.append(f"Gemiddeld verlies per verliezer: €{avg_loss:.2f}.")
+        if winners:
+            avg_win = sum(t.get("profit_loss", 0) for t in winners) / len(winners)
+            parts.append(f"Gemiddelde winst per winnaar: €{avg_win:.2f}.")
+
+        # Symbolen die herhaaldelijk verlies gaven
+        loss_counts: Dict[str, int] = {}
+        for t in losers:
+            sym = t.get("symbol", "")
+            loss_counts[sym] = loss_counts.get(sym, 0) + 1
+        repeat = [f"{s} ({c}x)" for s, c in loss_counts.items() if c >= 2]
+        if repeat:
+            parts.append(f"Herhaalde verliezers (VERMIJD): {', '.join(repeat)}.")
+
+        self._trade_lessons = " ".join(parts)
+        return self._trade_lessons
+
+    # ------------------------------------------------------------------
+    # Primaire AI-analyse (verrijkt technische signalen)
+    # ------------------------------------------------------------------
+
     def analyze_signals(
         self,
         signals: List[Dict],
-        market_context: str = "",
+        trade_history: Optional[list] = None,
+        market_filter: Optional[str] = None,
     ) -> List[Dict]:
-        """Analyseer een lijst signalen met Groq AI en retourneer verrijkte resultaten."""
-        api_key = self._get_api_key()
-        if not api_key:
-            logger.warning("GROQ_API_KEY niet geconfigureerd; AI-analyse overgeslagen.")
-            return []
+        """Primaire analyse: het AI model analyseert technische signalen,
+        leert van trade-historie, en geeft verbeterde adviezen.
 
-        # Cache check
-        cache_key = "ai:" + ",".join(s.get("symbol", "") for s in signals[:10])
-        cached = self._get_cache(cache_key)
-        if cached:
-            return cached  # type: ignore[return-value]
+        Als GROQ_API_KEY ontbreekt: retourneer originele signalen met lege AI-velden.
+        """
+        # Update lessen als er trade-historie is
+        if trade_history:
+            self.update_trade_lessons(trade_history)
+
+        # Filter op markt als nodig
+        if market_filter:
+            signals = [s for s in signals if s.get("market") == market_filter]
 
         if not signals:
             return []
 
-        # Bouw compacte signaal-summary voor de prompt
-        signal_summaries = []
-        for s in signals[:10]:
-            signal_summaries.append(
-                f"- {s['symbol']} ({s['market']}): prijs ${s['price']:.2f}, "
-                f"actie={s['action']}, confidence={s['confidence']:.0%}, "
-                f"RSI/MACD/BB info: {s.get('reason', 'n/a')}"
-            )
-        signals_text = "\n".join(signal_summaries)
+        api_key = self._get_api_key()
+        if not api_key:
+            # Fallback: geef technische signalen terug met lege AI-velden
+            return self._add_empty_ai_fields(signals)
 
-        prompt = (
-            "Je bent een professionele trading-analist. Analyseer de volgende top trading-signalen "
-            "en geef per signaal een korte, concrete Nederlandse analyse (max 2 zinnen) met:\n"
-            "1. Waarom dit een goed koopmoment is (of niet)\n"
-            "2. Belangrijkste risico\n"
-            "3. Geef een AI-score van 1-100\n\n"
-            f"Marktcontext: {market_context or 'Reguliere handelsdag'}\n\n"
-            f"Signalen:\n{signals_text}\n\n"
-            "Antwoord ALLEEN in geldig JSON formaat als een array van objecten met velden: "
-            '"symbol", "ai_score" (int 1-100), "ai_analysis" (string, Nederlands, max 2 zinnen), '
-            '"ai_risk" (string, Nederlands, max 1 zin).\n'
-            "Geen extra tekst buiten de JSON array."
-        )
+        # Cache check
+        cache_key = self._make_cache_key(signals, market_filter)
+        cached = self._get_cache(cache_key)
+        if cached is not None:
+            return cached  # type: ignore[return-value]
+
+        # Bouw prompt en roep Groq aan
+        prompt = self._build_prompt(signals)
 
         try:
-            result = self._call_groq(api_key, prompt)
-            parsed = self._parse_response(result, signals)
-            self._set_cache(cache_key, parsed)
-            return parsed
+            raw = self._call_groq(api_key, prompt)
+            results = self._parse_response(raw, signals)
+            if results:
+                self._set_cache(cache_key, results)
+            return results
         except Exception as exc:
             logger.error("Groq AI-analyse mislukt: %s", exc)
-            return []
+            return self._add_empty_ai_fields(signals)
+
+    def _build_prompt(self, signals: List[Dict]) -> str:
+        """Bouw prompt met marktdata + lessen uit eerdere trades."""
+        data_lines = []
+        for s in signals[:15]:
+            price = s.get("price", 0)
+            data_lines.append(
+                f"- {s.get('symbol', '?')} ({s.get('market', '?')}): "
+                f"prijs=${price:.2f}, technisch_advies={s.get('action', '?')}, "
+                f"confidence={s.get('confidence', 0):.0%}, "
+                f"technische_analyse: {s.get('reason', 'n/a')}"
+            )
+        data_text = "\n".join(data_lines)
+
+        lessons_block = ""
+        if self._trade_lessons:
+            lessons_block = (
+                f"\n\nBELANGRIJK — Leer van mijn eerdere trades:\n"
+                f"{self._trade_lessons}\n"
+                "Gebruik deze informatie om betere aanbevelingen te doen. "
+                "Vermijd symbolen die herhaaldelijk verlies gaven. "
+                "Focus op patronen die eerder winst opleverden.\n"
+            )
+
+        return (
+            "Je bent een expert trading-analist. Analyseer de volgende instrumenten "
+            "en geef concrete koop/verkoop adviezen in het Nederlands.\n\n"
+            "REGELS:\n"
+            "- Analyseer ELKE aangeboden asset\n"
+            "- Geef een AI-score van 1-100 (hoger = sterker koopsignaal)\n"
+            "- Wees eerlijk: als het geen goed moment is, zeg dat\n"
+            "- Geef korte concrete Nederlandse analyse (max 2 zinnen)\n"
+            "- Geef het belangrijkste risico (max 1 zin)\n"
+            "- Bepaal actie: 'buy', 'sell' of 'hold'\n"
+            "- Geef een koersdoel (target_price) en verwacht rendement in %\n"
+            f"{lessons_block}\n"
+            f"MARKTDATA:\n{data_text}\n\n"
+            "Antwoord ALLEEN in geldig JSON als een array van objecten met EXACT deze velden:\n"
+            '[\n'
+            '  {\n'
+            '    "symbol": "AAPL",\n'
+            '    "action": "buy",\n'
+            '    "ai_score": 85,\n'
+            '    "ai_analysis": "Sterke technische setup met...",\n'
+            '    "ai_risk": "Risico op...",\n'
+            '    "target_price": 155.50,\n'
+            '    "expected_return_pct": 2.5,\n'
+            '    "confidence": 0.82\n'
+            '  }\n'
+            ']\n'
+            "Geen extra tekst buiten de JSON array. Sorteer op ai_score (hoogste eerst)."
+        )
+
+    # ------------------------------------------------------------------
+    # Groq API
+    # ------------------------------------------------------------------
 
     def _call_groq(self, api_key: str, prompt: str) -> str:
         payload = json.dumps({
             "model": _MODEL,
             "messages": [
-                {"role": "system", "content": "Je bent een professionele Nederlandse trading-analist."},
+                {
+                    "role": "system",
+                    "content": (
+                        "Je bent een professionele Nederlandse trading-analist. "
+                        "Je leert van eerdere fouten en geeft steeds betere adviezen. "
+                        "Antwoord altijd in geldig JSON."
+                    ),
+                },
                 {"role": "user", "content": prompt},
             ],
             "temperature": 0.3,
-            "max_tokens": 1500,
+            "max_tokens": 2000,
         }).encode("utf-8")
 
         req = Request(
@@ -98,13 +223,16 @@ class AiAnalysisService:
             method="POST",
         )
 
-        with urlopen(req, timeout=15) as resp:
+        with urlopen(req, timeout=20) as resp:
             data = json.loads(resp.read().decode("utf-8"))
             return data["choices"][0]["message"]["content"]
 
+    # ------------------------------------------------------------------
+    # Response parsing
+    # ------------------------------------------------------------------
+
     def _parse_response(self, raw: str, original_signals: List[Dict]) -> List[Dict]:
-        """Parse Groq JSON response en merge met originele signalen."""
-        # Strip eventuele markdown code fences
+        """Parse Groq JSON en merge AI-analyse met originele signalen."""
         cleaned = raw.strip()
         if cleaned.startswith("```"):
             lines = cleaned.split("\n")
@@ -115,31 +243,80 @@ class AiAnalysisService:
         try:
             ai_items = json.loads(cleaned)
         except json.JSONDecodeError:
-            logger.warning("Kon Groq-response niet parsen als JSON")
-            return []
+            logger.warning("Kon Groq-response niet parsen: %s", cleaned[:200])
+            return self._add_empty_ai_fields(original_signals)
 
-        # Bouw lookup van AI-resultaten
+        if not isinstance(ai_items, list):
+            return self._add_empty_ai_fields(original_signals)
+
+        # Lookup op symbool
         ai_map: Dict[str, Dict] = {}
         for item in ai_items:
-            sym = item.get("symbol", "").upper()
+            sym = str(item.get("symbol", "")).upper()
             if sym:
                 ai_map[sym] = item
 
-        # Merge met originele signalen
-        enriched: List[Dict] = []
-        for signal in original_signals[:10]:
+        results: List[Dict] = []
+        for signal in original_signals:
             sym = signal.get("symbol", "").upper()
             ai = ai_map.get(sym, {})
-            enriched.append({
-                **signal,
-                "ai_score": ai.get("ai_score", 0),
-                "ai_analysis": ai.get("ai_analysis", ""),
-                "ai_risk": ai.get("ai_risk", ""),
-            })
+            ai_score = int(ai.get("ai_score", 0))
 
-        # Sorteer op AI-score (hoogste eerst)
-        enriched.sort(key=lambda x: x.get("ai_score", 0), reverse=True)
-        return enriched
+            merged = {**signal}
+            merged["ai_score"] = ai_score
+            merged["ai_analysis"] = str(ai.get("ai_analysis", ""))
+            merged["ai_risk"] = str(ai.get("ai_risk", ""))
+
+            # Als AI een andere actie aanbeveelt, neem AI-advies over
+            ai_action = ai.get("action")
+            if ai_action in ("buy", "sell", "hold"):
+                merged["action"] = ai_action
+            if ai.get("confidence"):
+                merged["confidence"] = float(ai["confidence"])
+            if ai.get("target_price"):
+                merged["target_price"] = float(ai["target_price"])
+            if ai.get("expected_return_pct"):
+                merged["expected_return_pct"] = float(ai["expected_return_pct"])
+
+            merged["rank_label"] = self._score_to_label(ai_score)
+            results.append(merged)
+
+        results.sort(key=lambda x: x.get("ai_score", 0), reverse=True)
+        return results
+
+    @staticmethod
+    def _add_empty_ai_fields(signals: List[Dict]) -> List[Dict]:
+        """Voeg lege AI-velden toe zodat de frontend altijd dezelfde structuur krijgt."""
+        out = []
+        for s in signals:
+            merged = {**s}
+            merged.setdefault("ai_score", 0)
+            merged.setdefault("ai_analysis", "")
+            merged.setdefault("ai_risk", "")
+            out.append(merged)
+        return out
+
+    @staticmethod
+    def _score_to_label(score: int) -> str:
+        if score >= 85:
+            return "AI Topkans"
+        elif score >= 70:
+            return "AI Sterke setup"
+        elif score >= 55:
+            return "AI Goede kans"
+        elif score >= 40:
+            return "AI Neutraal"
+        elif score > 0:
+            return "AI Zwak"
+        return ""
+
+    # ------------------------------------------------------------------
+    # Cache
+    # ------------------------------------------------------------------
+
+    def _make_cache_key(self, signals: List[Dict], market_filter: Optional[str]) -> str:
+        syms = ",".join(s.get("symbol", "") for s in signals[:15])
+        return f"ai:{market_filter or 'all'}:{syms}"
 
     def _set_cache(self, key: str, value: object) -> None:
         self._cache[key] = {
@@ -155,3 +332,6 @@ class AiAnalysisService:
             self._cache.pop(key, None)
             return None
         return item["value"]
+
+    def invalidate_cache(self) -> None:
+        self._cache.clear()

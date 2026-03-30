@@ -14,6 +14,10 @@ class Signal {
   final String rankLabel;
   final String reason;
   final String strategy;
+  // AI-analyse velden
+  final int aiScore;
+  final String aiAnalysis;
+  final String aiRisk;
 
   Signal({
     required this.id,
@@ -31,11 +35,14 @@ class Signal {
     required this.rankLabel,
     required this.reason,
     required this.strategy,
+    this.aiScore = 0,
+    this.aiAnalysis = '',
+    this.aiRisk = '',
   });
 
   factory Signal.fromJson(Map<String, dynamic> json) {
     return Signal(
-      id: json['id'] as String,
+      id: (json['id'] as String?) ?? '',
       symbol: json['symbol'] as String,
       market: (json['market'] as String?) ?? 'unknown',
       action: json['action'] as String,
@@ -50,6 +57,9 @@ class Signal {
       rankLabel: (json['rank_label'] as String?) ?? '',
       reason: (json['reason'] as String?) ?? '',
       strategy: (json['strategy'] as String?) ?? 'daytrade',
+      aiScore: (json['ai_score'] as num?)?.toInt() ?? 0,
+      aiAnalysis: (json['ai_analysis'] as String?) ?? '',
+      aiRisk: (json['ai_risk'] as String?) ?? '',
     );
   }
 }
