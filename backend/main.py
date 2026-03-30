@@ -112,7 +112,7 @@ def send_realtime_alerts() -> Dict[str, Any]:
     try:
         return alert_service.send_realtime_alerts(signals, sell_advice)
     except RuntimeError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=503, detail=str(exc))
 
 
 @app.post("/alerts/summary", dependencies=[Depends(verify_token)])
@@ -122,7 +122,7 @@ def send_daily_summary() -> Dict[str, Any]:
     try:
         return alert_service.send_daily_summary(signals, sell_advice)
     except RuntimeError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=503, detail=str(exc))
 
 
 @app.post("/login")

@@ -125,7 +125,7 @@ class ApiClient {
   static Future<Map<String, dynamic>> sendRealtimeAlerts() async {
     final response = await http.post(Uri.parse('$kBackendUrl/alerts/realtime'), headers: _headers());
     if (response.statusCode != 200) {
-      throw Exception('Fout bij versturen realtime alerts (${response.statusCode})');
+      throw Exception(_extractDetail(response.body, 'Fout bij versturen realtime alerts (${response.statusCode})'));
     }
     return jsonDecode(response.body) as Map<String, dynamic>;
   }
@@ -133,9 +133,18 @@ class ApiClient {
   static Future<Map<String, dynamic>> sendDailySummary() async {
     final response = await http.post(Uri.parse('$kBackendUrl/alerts/summary'), headers: _headers());
     if (response.statusCode != 200) {
-      throw Exception('Fout bij versturen dag samenvatting (${response.statusCode})');
+      throw Exception(_extractDetail(response.body, 'Fout bij versturen dag samenvatting (${response.statusCode})'));
     }
     return jsonDecode(response.body) as Map<String, dynamic>;
+  }
+
+  static String _extractDetail(String body, String fallback) {
+    try {
+      final map = jsonDecode(body) as Map<String, dynamic>;
+      final detail = map['detail'];
+      if (detail is String && detail.isNotEmpty) return detail;
+    } catch (_) {}
+    return fallback;
   }
 
   static Future<String> login(String username, String password) async {
