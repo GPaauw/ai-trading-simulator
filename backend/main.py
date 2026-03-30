@@ -1,5 +1,6 @@
 from typing import Any, Dict, List
 import logging
+import os
 
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -36,7 +37,13 @@ alert_service = AlertService(data_service)
 @app.on_event("startup")
 def startup_event() -> None:
     try:
-        market_data_service.start_prefetch_scheduler(interval_seconds=300)
+        prefetch_env = os.environ.get("PREFETCH_ON_STARTUP", "false").lower()
+        if prefetch_env in ("1", "true", "yes"):
+            market_data_service.start_prefetch_scheduler(interval_seconds=300)
+        else:
+            logging.getLogger(__name__).info(
+                "Prefetch scheduler not started (PREFETCH_ON_STARTUP=%s)", prefetch_env
+            )
     except Exception as exc:
         logging.getLogger(__name__).warning("Failed to start prefetch scheduler: %s", exc)
 

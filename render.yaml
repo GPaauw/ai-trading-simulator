@@ -15,3 +15,6 @@ services:
       - key: APP_PASSWORD
         # Stel deze in via de Render dashboard of secret management
         value: ""
+      - key: PREFETCH_ON_STARTUP
+        # Zet op 'true' om bij startup te prefetchen; default 'false' vermindert memory gebruik
+        value: "false"
