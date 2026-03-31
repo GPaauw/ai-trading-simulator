@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import 'api_client.dart';
@@ -32,6 +34,9 @@ class _DashboardPageState extends State<DashboardPage>
   bool _loadingPortfolio = false;
   bool _loadingAi = false;
 
+  Map<String, dynamic>? _prefetchStatus;
+  Timer? _prefetchPollTimer;
+
   String? _signalError;
   String? _longtermError;
   String? _aiError;
@@ -48,18 +53,39 @@ class _DashboardPageState extends State<DashboardPage>
   @override
   void dispose() {
     _tabController.dispose();
+    _prefetchPollTimer?.cancel();
     super.dispose();
   }
 
   Future<void> _refreshAll() async {
-    await Future.wait([
-      _refreshSignals(),
-      _refreshLongtermSignals(),
-      _refreshHoldings(),
-      _refreshHistory(),
-      _refreshPortfolio(),
-      _refreshAiSignals(),
-    ]);
+    _startPrefetchPolling();
+    try {
+      await Future.wait([
+        _refreshSignals(),
+        _refreshLongtermSignals(),
+        _refreshHoldings(),
+        _refreshHistory(),
+        _refreshPortfolio(),
+        _refreshAiSignals(),
+      ]);
+    } finally {
+      _stopPrefetchPolling();
+    }
+  }
+
+  void _startPrefetchPolling() {
+    _prefetchPollTimer?.cancel();
+    _prefetchPollTimer = Timer.periodic(const Duration(seconds: 2), (_) async {
+      try {
+        final status = await ApiClient.getPrefetchStatus();
+        if (mounted) setState(() => _prefetchStatus = status);
+      } catch (_) {}
+    });
+  }
+
+  void _stopPrefetchPolling() {
+    _prefetchPollTimer?.cancel();
+    _prefetchPollTimer = null;
   }
 
   Future<void> _refreshSignals() async {
@@ -474,6 +500,33 @@ class _DashboardPageState extends State<DashboardPage>
   }
 
   // ════════════════════════════════════════════════════════════════════
+  // LOADING INDICATOR
+  // ════════════════════════════════════════════════════════════════════
+
+  Widget _buildLoadingIndicator() {
+    final status = _prefetchStatus;
+    final isRunning = status?['is_running'] as bool? ?? false;
+    final pct = (status?['progress_pct'] as num?)?.toDouble();
+    final eta = (status?['eta_seconds'] as num?)?.toInt();
+
+    if (isRunning && pct != null) {
+      final etaText = (eta != null && eta > 0) ? ' — nog ~${eta}s' : '';
+      return Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          LinearProgressIndicator(value: pct / 100),
+          const SizedBox(height: 8),
+          Text(
+            'Marktdata laden... ${pct.toStringAsFixed(0)}%$etaText',
+            style: const TextStyle(fontSize: 12),
+          ),
+        ],
+      );
+    }
+    return const Center(child: CircularProgressIndicator());
+  }
+
+  // ════════════════════════════════════════════════════════════════════
   // BUILD
   // ════════════════════════════════════════════════════════════════════
 
@@ -557,9 +610,9 @@ class _DashboardPageState extends State<DashboardPage>
                     ),
                     const Divider(),
                     if (_loadingAi)
-                      const Padding(
-                        padding: EdgeInsets.all(12),
-                        child: Center(child: CircularProgressIndicator()),
+                      Padding(
+                        padding: const EdgeInsets.all(12),
+                        child: _buildLoadingIndicator(),
                       )
                     else if (_aiError != null)
                       Text(_aiError!,
@@ -803,9 +856,9 @@ class _DashboardPageState extends State<DashboardPage>
             ),
             const Divider(),
             if (loading)
-              const Padding(
-                padding: EdgeInsets.all(12),
-                child: Center(child: CircularProgressIndicator()),
+              Padding(
+                padding: const EdgeInsets.all(12),
+                child: _buildLoadingIndicator(),
               )
             else if (error != null)
               Text(error,

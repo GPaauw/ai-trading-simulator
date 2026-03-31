@@ -78,6 +78,8 @@ class MarketDataService:
             "last_run_elapsed": None,
             "last_run_count": 0,
             "error": None,
+            "total_instruments": 0,
+            "progress_count": 0,
         }
 
     # ------------------------------------------------------------------
@@ -149,6 +151,9 @@ class MarketDataService:
 
         logger.info("Batch-download %d instrumenten via yfinance...", len(yf_syms))
         start = time.time()
+        with self._prefetch_lock:
+            self._prefetch_status["total_instruments"] = len(yf_syms)
+            self._prefetch_status["progress_count"] = 0
 
         # Download in kleinere batches om memory-pieken op kleine instances te voorkomen.
         for i in range(0, len(yf_syms), batch_size):
@@ -190,6 +195,9 @@ class MarketDataService:
                     gc.collect()
             except Exception as exc:
                 logger.warning("Batch-download fout voor %s: %s", batch[:3], exc)
+            finally:
+                with self._prefetch_lock:
+                    self._prefetch_status["progress_count"] = min(i + batch_size, len(yf_syms))
 
         elapsed = time.time() - start
         cached_count = sum(1 for k in self._cache if k.startswith("history:yf:"))
@@ -509,4 +517,25 @@ class MarketDataService:
 
     def get_prefetch_status(self) -> Dict[str, object]:
         with self._prefetch_lock:
-            return dict(self._prefetch_status)
+            status = dict(self._prefetch_status)
+        total = int(status.get("total_instruments") or 0)
+        count = int(status.get("progress_count") or 0)
+        if total > 0:
+            pct = round(count / total * 100, 1)
+        elif not status.get("is_running"):
+            pct = 100.0
+        else:
+            pct = 0.0
+        eta_seconds = None
+        if status.get("is_running") and total > 0 and count > 0:
+            last_run_start = status.get("last_run_start")
+            if last_run_start:
+                elapsed = time.time() - float(last_run_start)  # type: ignore[arg-type]
+                if elapsed > 0:
+                    rate = count / elapsed
+                    remaining = total - count
+                    if rate > 0:
+                        eta_seconds = round(remaining / rate)
+        status["progress_pct"] = pct
+        status["eta_seconds"] = eta_seconds
+        return status

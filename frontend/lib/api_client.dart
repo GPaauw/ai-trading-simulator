@@ -201,4 +201,15 @@ class ApiClient {
     setToken(token);
     return token;
   }
+
+  static Future<Map<String, dynamic>> getPrefetchStatus() async {
+    final response = await http.get(
+      Uri.parse('$kBackendUrl/prefetch/status'),
+      headers: _headers(),
+    );
+    if (response.statusCode != 200) {
+      throw Exception('Fout bij ophalen laadstatus (${response.statusCode})');
+    }
+    return jsonDecode(response.body) as Map<String, dynamic>;
+  }
 }
