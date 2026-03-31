@@ -53,7 +53,7 @@ Voor realtime alerts en dagelijkse samenvatting:
 ```bash
 cd backend
 pip install -r requirements.txt
-APP_USERNAME=admin APP_PASSWORD=trading123 START_BALANCE=2000 uvicorn main:app --host 0.0.0.0 --port 8000
+APP_USERNAME APP_PASSWORD START_BALANCE=2000 uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
 ### 2. Frontend
@@ -61,7 +61,7 @@ APP_USERNAME=admin APP_PASSWORD=trading123 START_BALANCE=2000 uvicorn main:app -
 ```bash
 cd frontend
 flutter pub get
-flutter run -d chrome
+flutter run -d edge
 ```
 
 ## Hoe je de app gebruikt
