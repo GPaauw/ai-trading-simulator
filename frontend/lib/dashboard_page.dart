@@ -43,16 +43,27 @@ class _DashboardPageState extends State<DashboardPage>
 
   List<Map<String, dynamic>> _aiSignals = [];
 
+  // ── Zoek & Track tab state ──
+  final TextEditingController _searchController = TextEditingController();
+  List<Map<String, dynamic>> _searchResults = [];
+  List<Map<String, dynamic>> _trackedSymbols = []; // ignore: prefer_final_fields
+  List<Map<String, dynamic>> _trackedAnalysis = [];
+  bool _loadingSearch = false;
+  bool _loadingTrackedAnalysis = false;
+  String? _searchError;
+  String? _trackedAnalysisError;
+
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 6, vsync: this);
+    _tabController = TabController(length: 7, vsync: this);
     _refreshAll();
   }
 
   @override
   void dispose() {
     _tabController.dispose();
+    _searchController.dispose();
     _prefetchPollTimer?.cancel();
     super.dispose();
   }
@@ -558,6 +569,7 @@ class _DashboardPageState extends State<DashboardPage>
             Tab(icon: Icon(Icons.currency_bitcoin), text: 'Crypto'),
             Tab(icon: Icon(Icons.diamond), text: 'Grondstoffen'),
             Tab(icon: Icon(Icons.trending_up), text: 'Langetermijn'),
+            Tab(icon: Icon(Icons.search), text: 'Zoeken'),
             Tab(icon: Icon(Icons.account_balance_wallet), text: 'Portfolio'),
           ],
         ),
@@ -570,6 +582,7 @@ class _DashboardPageState extends State<DashboardPage>
           _buildMarketTab('crypto', 'Crypto'),
           _buildMarketTab('commodity', 'Grondstoffen'),
           _buildLongtermTab(),
+          _buildSearchTab(),
           _buildPortfolioTab(),
         ],
       ),
@@ -709,6 +722,434 @@ class _DashboardPageState extends State<DashboardPage>
               child: const Text('Ik kocht dit'),
             )
           : const SizedBox.shrink(),
+    );
+  }
+
+  // ════════════════════════════════════════════════════════════════════
+  // ZOEK & TRACK TAB
+  // ════════════════════════════════════════════════════════════════════
+
+  Future<void> _searchSymbol(String query) async {
+    if (query.trim().isEmpty) return;
+    setState(() {
+      _loadingSearch = true;
+      _searchError = null;
+    });
+    try {
+      final results = await ApiClient.searchSymbols(query.trim());
+      if (mounted) setState(() => _searchResults = results);
+    } catch (e) {
+      if (mounted) setState(() => _searchError = e.toString());
+    } finally {
+      if (mounted) setState(() => _loadingSearch = false);
+    }
+  }
+
+  void _addToTracked(Map<String, dynamic> result) {
+    final symbol = (result['symbol'] as String).toUpperCase();
+    final alreadyTracked =
+        _trackedSymbols.any((t) => (t['symbol'] as String).toUpperCase() == symbol);
+    if (alreadyTracked) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('$symbol staat al in je lijst.')),
+      );
+      return;
+    }
+    setState(() {
+      _trackedSymbols.add({
+        'symbol': symbol,
+        'market': result['market'] ?? 'us',
+        'buy_price': 0.0,
+        'quantity': 0.0,
+      });
+    });
+  }
+
+  void _removeFromTracked(int index) {
+    setState(() {
+      _trackedSymbols.removeAt(index);
+      // Verwijder bijbehorende analyse
+      if (_trackedAnalysis.isNotEmpty) {
+        _trackedAnalysis = _trackedAnalysis
+            .where((a) => _trackedSymbols.any(
+                (t) => (t['symbol'] as String).toUpperCase() == (a['symbol'] as String? ?? '').toUpperCase()))
+            .toList();
+      }
+    });
+  }
+
+  Future<void> _editTrackedEntry(int index) async {
+    final entry = _trackedSymbols[index];
+    final priceController =
+        TextEditingController(text: (entry['buy_price'] as num).toStringAsFixed(2));
+    final quantityController =
+        TextEditingController(text: (entry['quantity'] as num).toStringAsFixed(4));
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('${entry['symbol']} — Aankoopgegevens'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: priceController,
+              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+              decoration: const InputDecoration(labelText: 'Aankoopprijs per stuk (€)'),
+            ),
+            TextField(
+              controller: quantityController,
+              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+              decoration: const InputDecoration(labelText: 'Aantal stuks'),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Annuleren'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Opslaan'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true) return;
+
+    final price = double.tryParse(priceController.text.replaceAll(',', '.')) ?? 0.0;
+    final quantity = double.tryParse(quantityController.text.replaceAll(',', '.')) ?? 0.0;
+
+    setState(() {
+      _trackedSymbols[index] = {
+        ...entry,
+        'buy_price': price,
+        'quantity': quantity,
+      };
+    });
+  }
+
+  Future<void> _analyzeTrackedSymbols() async {
+    if (_trackedSymbols.isEmpty) return;
+    if (!ApiClient.isLoggedIn()) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Log eerst in voor AI-analyse.')),
+      );
+      return;
+    }
+
+    setState(() {
+      _loadingTrackedAnalysis = true;
+      _trackedAnalysisError = null;
+    });
+
+    try {
+      final results = await ApiClient.analyzeCustomSymbols(_trackedSymbols);
+      if (mounted) setState(() => _trackedAnalysis = results);
+    } catch (e) {
+      if (mounted) setState(() => _trackedAnalysisError = e.toString());
+    } finally {
+      if (mounted) setState(() => _loadingTrackedAnalysis = false);
+    }
+  }
+
+  Future<void> _registerBuyFromTracked(Map<String, dynamic> entry) async {
+    final symbol = entry['symbol'] as String;
+    final market = entry['market'] as String? ?? 'us';
+    final buyPrice = (entry['buy_price'] as num?)?.toDouble() ?? 0.0;
+    final quantity = (entry['quantity'] as num?)?.toDouble() ?? 0.0;
+
+    if (buyPrice <= 0 || quantity <= 0) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Vul eerst aankoopprijs en aantal in.')),
+      );
+      return;
+    }
+
+    final amount = buyPrice * quantity;
+    try {
+      final trade = await ApiClient.executeTrade(
+        symbol,
+        'buy',
+        amount,
+        market: market,
+        quantity: quantity,
+        price: buyPrice,
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Aankoop opgeslagen: ${trade.symbol} | '
+            '${trade.quantity.toStringAsFixed(4)} stuks @ ${trade.price.toStringAsFixed(2)}',
+          ),
+          backgroundColor: Colors.green[700],
+        ),
+      );
+      await Future.wait([_refreshHistory(), _refreshPortfolio(), _refreshHoldings()]);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Tradefout: $e'), backgroundColor: Colors.red[700]),
+      );
+    }
+  }
+
+  Widget _buildSearchTab() {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(16),
+      child: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 980),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              // ── Zoekbalk ──
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('Aandeel zoeken',
+                          style: Theme.of(context).textTheme.titleLarge),
+                      const SizedBox(height: 12),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: TextField(
+                              controller: _searchController,
+                              decoration: const InputDecoration(
+                                hintText: 'Ticker/symbool (bijv. AAPL, TSLA, BTC)',
+                                prefixIcon: Icon(Icons.search),
+                                border: OutlineInputBorder(),
+                              ),
+                              textCapitalization: TextCapitalization.characters,
+                              onSubmitted: _searchSymbol,
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          FilledButton.icon(
+                            icon: _loadingSearch
+                                ? const SizedBox(
+                                    width: 16,
+                                    height: 16,
+                                    child: CircularProgressIndicator(
+                                        strokeWidth: 2, color: Colors.white),
+                                  )
+                                : const Icon(Icons.search),
+                            label: const Text('Zoek'),
+                            onPressed: _loadingSearch
+                                ? null
+                                : () => _searchSymbol(_searchController.text),
+                          ),
+                        ],
+                      ),
+                      if (_searchError != null) ...[
+                        const SizedBox(height: 8),
+                        Text(_searchError!,
+                            style: TextStyle(
+                                color: Theme.of(context).colorScheme.error)),
+                      ],
+                      if (_searchResults.isNotEmpty) ...[
+                        const SizedBox(height: 12),
+                        const Divider(),
+                        ListView.separated(
+                          shrinkWrap: true,
+                          physics: const NeverScrollableScrollPhysics(),
+                          itemCount: _searchResults.length,
+                          separatorBuilder: (_, __) => const Divider(height: 1),
+                          itemBuilder: (_, i) {
+                            final r = _searchResults[i];
+                            final symbol = r['symbol'] as String? ?? '';
+                            final market = r['market'] as String? ?? 'us';
+                            final price = (r['price'] as num?)?.toDouble();
+                            final inWatchlist = r['in_watchlist'] as bool? ?? false;
+                            return ListTile(
+                              leading: CircleAvatar(
+                                backgroundColor:
+                                    inWatchlist ? Colors.green : Colors.blueGrey,
+                                child: Text(
+                                  _marketLabel(market).substring(0, 2),
+                                  style: const TextStyle(
+                                      color: Colors.white, fontSize: 12),
+                                ),
+                              ),
+                              title: Text('$symbol (${_marketLabel(market)})'),
+                              subtitle: Text(price != null
+                                  ? 'Prijs: €${price.toStringAsFixed(2)}'
+                                  : inWatchlist
+                                      ? 'In watchlist'
+                                      : ''),
+                              trailing: IconButton(
+                                icon: const Icon(Icons.add_circle_outline),
+                                tooltip: 'Toevoegen aan lijst',
+                                onPressed: () => _addToTracked(r),
+                              ),
+                            );
+                          },
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 16),
+
+              // ── Gevolgde symbolen ──
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Text('Mijn aandelen',
+                              style: Theme.of(context).textTheme.titleLarge),
+                          Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              if (_trackedSymbols.isNotEmpty)
+                                FilledButton.icon(
+                                  icon: _loadingTrackedAnalysis
+                                      ? const SizedBox(
+                                          width: 16,
+                                          height: 16,
+                                          child: CircularProgressIndicator(
+                                              strokeWidth: 2,
+                                              color: Colors.white),
+                                        )
+                                      : const Icon(Icons.auto_awesome),
+                                  label: const Text('AI Analyse'),
+                                  onPressed: _loadingTrackedAnalysis
+                                      ? null
+                                      : _analyzeTrackedSymbols,
+                                ),
+                            ],
+                          ),
+                        ],
+                      ),
+                      const Divider(),
+                      if (_trackedSymbols.isEmpty)
+                        const Padding(
+                          padding: EdgeInsets.all(12),
+                          child: Text(
+                            'Zoek hierboven een aandeel en voeg het toe aan je lijst. '
+                            'Vul je aankoopprijs en aantal in, en laat AI het analyseren.',
+                          ),
+                        )
+                      else
+                        ListView.separated(
+                          shrinkWrap: true,
+                          physics: const NeverScrollableScrollPhysics(),
+                          itemCount: _trackedSymbols.length,
+                          separatorBuilder: (_, __) => const Divider(height: 1),
+                          itemBuilder: (_, i) {
+                            final entry = _trackedSymbols[i];
+                            final symbol = entry['symbol'] as String;
+                            final market = entry['market'] as String? ?? 'us';
+                            final buyPrice =
+                                (entry['buy_price'] as num?)?.toDouble() ?? 0.0;
+                            final quantity =
+                                (entry['quantity'] as num?)?.toDouble() ?? 0.0;
+                            final loggedIn = ApiClient.isLoggedIn();
+
+                            return ListTile(
+                              leading: CircleAvatar(
+                                backgroundColor: Colors.indigo,
+                                child: Text(
+                                  symbol.length >= 2
+                                      ? symbol.substring(0, 2)
+                                      : symbol,
+                                  style: const TextStyle(
+                                      color: Colors.white, fontSize: 12),
+                                ),
+                              ),
+                              title: Text(
+                                  '$symbol (${_marketLabel(market)})'),
+                              subtitle: Text(
+                                buyPrice > 0
+                                    ? 'Aankoop: €${buyPrice.toStringAsFixed(2)} | '
+                                        '${quantity.toStringAsFixed(4)} stuks | '
+                                        'Totaal: €${(buyPrice * quantity).toStringAsFixed(2)}'
+                                    : 'Tik op bewerken om aankoopgegevens in te vullen',
+                              ),
+                              trailing: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  IconButton(
+                                    icon: const Icon(Icons.edit, size: 20),
+                                    tooltip: 'Bewerken',
+                                    onPressed: () => _editTrackedEntry(i),
+                                  ),
+                                  if (loggedIn && buyPrice > 0 && quantity > 0)
+                                    IconButton(
+                                      icon: const Icon(Icons.add_shopping_cart,
+                                          size: 20),
+                                      tooltip: 'Registreer als aankoop',
+                                      onPressed: () =>
+                                          _registerBuyFromTracked(entry),
+                                    ),
+                                  IconButton(
+                                    icon: const Icon(Icons.delete_outline,
+                                        size: 20, color: Colors.red),
+                                    tooltip: 'Verwijderen',
+                                    onPressed: () => _removeFromTracked(i),
+                                  ),
+                                ],
+                              ),
+                            );
+                          },
+                        ),
+                    ],
+                  ),
+                ),
+              ),
+
+              // ── AI Analyse resultaten ──
+              if (_trackedAnalysis.isNotEmpty || _loadingTrackedAnalysis || _trackedAnalysisError != null) ...[
+                const SizedBox(height: 16),
+                Card(
+                  child: Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('AI Analyse — Mijn aandelen',
+                            style: Theme.of(context).textTheme.titleLarge),
+                        const Divider(),
+                        if (_loadingTrackedAnalysis)
+                          const Padding(
+                            padding: EdgeInsets.all(12),
+                            child: Center(child: CircularProgressIndicator()),
+                          )
+                        else if (_trackedAnalysisError != null)
+                          Text(_trackedAnalysisError!,
+                              style: TextStyle(
+                                  color: Theme.of(context).colorScheme.error))
+                        else
+                          ListView.separated(
+                            shrinkWrap: true,
+                            physics: const NeverScrollableScrollPhysics(),
+                            itemCount: _trackedAnalysis.length,
+                            separatorBuilder: (_, __) =>
+                                const Divider(height: 1),
+                            itemBuilder: (_, i) =>
+                                _buildAiSignalTile(_trackedAnalysis[i]),
+                          ),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
     );
   }
 

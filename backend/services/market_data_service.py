@@ -110,6 +110,72 @@ class MarketDataService:
         """Kleine watchlist voor snelle cold-start responses."""
         return self._FALLBACK_STOCKS + self._CRYPTO_SYMBOLS + self._COMMODITY_SYMBOLS
 
+    def search_symbol(self, query: str, max_results: int = 10) -> List[Dict[str, object]]:
+        """Zoek aandelen/crypto/grondstoffen op symbool of naam via yfinance."""
+        query = query.strip().upper()
+        if not query:
+            return []
+
+        results: List[Dict[str, object]] = []
+
+        # 1. Check watchlist matches
+        watchlist = self.get_watchlist()
+        for item in watchlist:
+            if query in item["symbol"].upper():
+                results.append({
+                    "symbol": item["symbol"],
+                    "market": item["market"],
+                    "name": item["symbol"],
+                    "in_watchlist": True,
+                })
+        if len(results) >= max_results:
+            return results[:max_results]
+
+        # 2. yfinance lookup voor resultaten buiten watchlist
+        seen = {r["symbol"] for r in results}
+        try:
+            ticker = yf.Ticker(query)
+            info = ticker.fast_info
+            if info and info.last_price and info.last_price > 0:
+                if query not in seen:
+                    results.insert(0, {
+                        "symbol": query,
+                        "market": "us",
+                        "name": query,
+                        "price": round(float(info.last_price), 4),
+                        "in_watchlist": False,
+                    })
+        except Exception:
+            pass
+
+        return results[:max_results]
+
+    def get_symbol_details(self, symbol: str, market: str = "us") -> Dict[str, object]:
+        """Haal snapshot + korte historie op voor een willekeurig symbool."""
+        instrument = {"symbol": symbol.upper(), "market": market}
+        # Voeg provider_symbol toe voor crypto
+        for crypto in self._CRYPTO_SYMBOLS:
+            if crypto["symbol"] == symbol.upper():
+                instrument = crypto
+                break
+        for commodity in self._COMMODITY_SYMBOLS:
+            if commodity["symbol"] == symbol.upper():
+                instrument = commodity
+                break
+
+        snapshot = self.get_snapshot(instrument)
+        history = self.get_history(instrument, points=60)
+        return {
+            "symbol": symbol.upper(),
+            "market": market,
+            "price": snapshot.get("price", 0),
+            "open": snapshot.get("open", 0),
+            "high": snapshot.get("high", 0),
+            "low": snapshot.get("low", 0),
+            "volume": snapshot.get("volume", 0),
+            "history_points": len(history),
+        }
+
     def has_warm_stock_cache(self) -> bool:
         """Geeft aan of er al voldoende stock-history in cache zit voor een volledige scan."""
         if not self._stock_data_loaded:

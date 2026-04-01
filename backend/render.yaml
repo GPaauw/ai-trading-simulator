@@ -15,3 +15,9 @@ services:
       - key: APP_PASSWORD
         # Stel deze in via de Render dashboard of secret management
         value: ""
+      - key: GEMINI_API_KEY
+        # Gemini API key uit Google AI Studio voor AI-analyse
+        sync: false
+      - key: GEMINI_MODEL
+        # Snelle en goedkope Gemini-variant voor JSON-analyse
+        value: "gemini-2.0-flash"

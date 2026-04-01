@@ -212,4 +212,31 @@ class ApiClient {
     }
     return jsonDecode(response.body) as Map<String, dynamic>;
   }
+
+  static Future<List<Map<String, dynamic>>> searchSymbols(String query) async {
+    final response = await http.get(
+      Uri.parse('$kBackendUrl/search?q=${Uri.encodeQueryComponent(query)}'),
+      headers: _headers(),
+    );
+    if (response.statusCode != 200) {
+      throw Exception('Fout bij zoeken (${response.statusCode})');
+    }
+    final List<dynamic> data = jsonDecode(response.body) as List<dynamic>;
+    return data.map((e) => e as Map<String, dynamic>).toList();
+  }
+
+  static Future<List<Map<String, dynamic>>> analyzeCustomSymbols(
+    List<Map<String, dynamic>> symbols,
+  ) async {
+    final response = await http.post(
+      Uri.parse('$kBackendUrl/analyze-custom'),
+      headers: _headers(),
+      body: jsonEncode({'symbols': symbols}),
+    );
+    if (response.statusCode != 200) {
+      throw Exception('Fout bij AI-analyse (${response.statusCode})');
+    }
+    final List<dynamic> data = jsonDecode(response.body) as List<dynamic>;
+    return data.map((e) => e as Map<String, dynamic>).toList();
+  }
 }

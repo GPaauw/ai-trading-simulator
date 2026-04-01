@@ -1,8 +1,8 @@
-"""AI-analyse service: primaire analyse-engine via Groq (gratis LLM).
+"""AI-analyse service: primaire analyse-engine via Gemini.
 
 Alle signalen gaan door het AI model. Het model leert van eerdere trades
 (winst/verlies) en past zijn adviezen daarop aan.
-Fallback: als GROQ_API_KEY ontbreekt worden technische signalen ongewijzigd doorgestuurd.
+Fallback: als GEMINI_API_KEY ontbreekt worden technische signalen ongewijzigd doorgestuurd.
 """
 
 import json
@@ -16,8 +16,8 @@ from urllib.request import Request, urlopen
 
 logger = logging.getLogger(__name__)
 
-_GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
-_MODEL = os.environ.get("GROQ_MODEL", "llama-3.1-8b-instant")
+_GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
 _CACHE_TTL = 5 * 60  # 5 minuten
 _REQUEST_TIMEOUT_SECONDS = 30
 
@@ -28,7 +28,7 @@ class AiAnalysisService:
         self._trade_lessons: str = ""
 
     def _get_api_key(self) -> str | None:
-        key = os.environ.get("GROQ_API_KEY", "").strip()
+        key = os.environ.get("GEMINI_API_KEY", "").strip()
         return key if key else None
 
     def is_available(self) -> bool:
@@ -105,7 +105,7 @@ class AiAnalysisService:
         """Primaire analyse: het AI model analyseert technische signalen,
         leert van trade-historie, en geeft verbeterde adviezen.
 
-        Als GROQ_API_KEY ontbreekt: retourneer originele signalen met lege AI-velden.
+        Als GEMINI_API_KEY ontbreekt: retourneer originele signalen met lege AI-velden.
         """
         # Update lessen als er trade-historie is
         if trade_history:
@@ -120,7 +120,7 @@ class AiAnalysisService:
 
         api_key = self._get_api_key()
         if not api_key:
-            logger.warning("GROQ_API_KEY ontbreekt; technische fallback wordt gebruikt.")
+            logger.warning("GEMINI_API_KEY ontbreekt; technische fallback wordt gebruikt.")
             return self._build_fallback_signals(signals, "AI-key ontbreekt; technische analyse wordt gebruikt.")
 
         # Cache check
@@ -129,17 +129,17 @@ class AiAnalysisService:
         if cached is not None:
             return cached  # type: ignore[return-value]
 
-        # Bouw prompt en roep Groq aan
+        # Bouw prompt en roep Gemini aan
         prompt = self._build_prompt(signals)
 
         try:
-            raw = self._call_groq(api_key, prompt)
+            raw = self._call_gemini(api_key, prompt)
             results = self._parse_response(raw, signals)
             if results:
                 self._set_cache(cache_key, results)
             return results
         except Exception as exc:
-            logger.error("Groq AI-analyse mislukt: %s", exc)
+            logger.error("Gemini AI-analyse mislukt: %s", exc)
             return self._build_fallback_signals(signals, "AI-analyse tijdelijk niet beschikbaar; technische analyse wordt gebruikt.")
 
     def _build_prompt(self, signals: List[Dict]) -> str:
@@ -197,33 +197,39 @@ class AiAnalysisService:
         )
 
     # ------------------------------------------------------------------
-    # Groq API
+    # Gemini API
     # ------------------------------------------------------------------
 
-    def _call_groq(self, api_key: str, prompt: str) -> str:
+    def _call_gemini(self, api_key: str, prompt: str) -> str:
         payload = json.dumps({
-            "model": _MODEL,
-            "messages": [
+            "systemInstruction": {
+                "parts": [
+                    {
+                        "text": (
+                            "Je bent een professionele Nederlandse trading-analist. "
+                            "Je leert van eerdere fouten en geeft steeds betere adviezen. "
+                            "Antwoord altijd in geldig JSON."
+                        )
+                    }
+                ]
+            },
+            "contents": [
                 {
-                    "role": "system",
-                    "content": (
-                        "Je bent een professionele Nederlandse trading-analist. "
-                        "Je leert van eerdere fouten en geeft steeds betere adviezen. "
-                        "Antwoord altijd in geldig JSON."
-                    ),
-                },
-                {"role": "user", "content": prompt},
+                    "role": "user",
+                    "parts": [{"text": prompt}],
+                }
             ],
-            "response_format": {"type": "json_object"},
-            "temperature": 0.3,
-            "max_tokens": 2000,
+            "generationConfig": {
+                "temperature": 0.3,
+                "maxOutputTokens": 2000,
+                "responseMimeType": "application/json",
+            },
         }).encode("utf-8")
 
         req = Request(
-            _GROQ_API_URL,
+            _GEMINI_API_URL.format(model=_MODEL, api_key=api_key),
             data=payload,
             headers={
-                "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json",
                 "User-Agent": "ai-trading-simulator/1.0",
             },
@@ -233,27 +239,36 @@ class AiAnalysisService:
         try:
             with urlopen(req, timeout=_REQUEST_TIMEOUT_SECONDS) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
-                return data["choices"][0]["message"]["content"]
+                candidates = data.get("candidates") or []
+                if not candidates:
+                    raise RuntimeError("Gemini gaf geen kandidaten terug")
+
+                parts = candidates[0].get("content", {}).get("parts") or []
+                text_parts = [part.get("text", "") for part in parts if isinstance(part, dict)]
+                raw = "".join(text_parts).strip()
+                if not raw:
+                    raise RuntimeError("Gemini gaf een lege response terug")
+                return raw
         except HTTPError as exc:
             error_body = exc.read().decode("utf-8", errors="replace")
-            logger.error("Groq HTTP-fout %s: %s", exc.code, error_body)
-            raise RuntimeError(f"Groq HTTP-fout {exc.code}") from exc
+            logger.error("Gemini HTTP-fout %s: %s", exc.code, error_body)
+            raise RuntimeError(f"Gemini HTTP-fout {exc.code}") from exc
         except URLError as exc:
-            logger.error("Groq netwerkfout: %s", exc)
-            raise RuntimeError("Groq netwerkfout") from exc
+            logger.error("Gemini netwerkfout: %s", exc)
+            raise RuntimeError("Gemini netwerkfout") from exc
 
     # ------------------------------------------------------------------
     # Response parsing
     # ------------------------------------------------------------------
 
     def _parse_response(self, raw: str, original_signals: List[Dict]) -> List[Dict]:
-        """Parse Groq JSON en merge AI-analyse met originele signalen."""
+        """Parse Gemini JSON en merge AI-analyse met originele signalen."""
         cleaned = self._extract_json_payload(raw)
 
         try:
             payload = json.loads(cleaned)
         except json.JSONDecodeError:
-            logger.warning("Kon Groq-response niet parsen: %s", cleaned[:200])
+            logger.warning("Kon Gemini-response niet parsen: %s", cleaned[:200])
             return self._build_fallback_signals(original_signals, "AI-response kon niet worden gelezen; technische analyse wordt gebruikt.")
 
         if isinstance(payload, dict):

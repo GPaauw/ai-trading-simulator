@@ -2,7 +2,7 @@ from typing import Any, Dict, List
 import logging
 import os
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
 from auth.security import validate_credentials, verify_token
@@ -93,7 +93,7 @@ def get_premarket_signals() -> List[Signal]:
 
 @app.get("/signals/ai")
 def get_ai_signals() -> List[Dict[str, Any]]:
-    """Top signalen verrijkt met AI-analyse via Groq (fallback: technische analyse)."""
+    """Top signalen verrijkt met AI-analyse via Gemini (fallback: technische analyse)."""
     # Gebruik snelle watchlist voor snelle response
     buy_signals = advice_engine.build_ranked_buy_signals(
         watchlist=market_data_service.get_fast_watchlist(),
@@ -108,7 +108,7 @@ def get_ai_signals() -> List[Dict[str, Any]]:
 
 @app.get("/advice")
 def get_advice() -> Any:
-    """Alle koopadviezen, verrijkt met AI-analyse als GROQ_API_KEY beschikbaar is."""
+    """Alle koopadviezen, verrijkt met AI-analyse als GEMINI_API_KEY beschikbaar is."""
     return _build_buy_advice()
 
 
@@ -135,6 +135,65 @@ def post_prefetch_now() -> Dict[str, object]:
         return {"started": True, "cached_count": cached}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.get("/search")
+def search_symbols(q: str = Query(..., min_length=1, max_length=10)) -> List[Dict[str, Any]]:
+    """Zoek aandelen/crypto/grondstoffen op symbool."""
+    try:
+        return market_data_service.search_symbol(q)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/analyze-custom", dependencies=[Depends(verify_token)])
+def analyze_custom_symbols(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """AI-analyse voor door de gebruiker opgegeven symbolen.
+
+    Body: {"symbols": [{"symbol": "AAPL", "market": "us", "buy_price": 150.0, "quantity": 10}]}
+    """
+    symbols = payload.get("symbols", [])
+    if not symbols or not isinstance(symbols, list):
+        raise HTTPException(status_code=400, detail="Geef een lijst van symbolen op.")
+
+    # Bouw signaal-achtige dicts met live marktdata
+    signal_dicts: List[Dict[str, Any]] = []
+    for entry in symbols[:15]:
+        symbol = str(entry.get("symbol", "")).upper()
+        market = str(entry.get("market", "us"))
+        buy_price = float(entry.get("buy_price", 0))
+        quantity = float(entry.get("quantity", 0))
+        if not symbol:
+            continue
+
+        # Haal live data op
+        try:
+            details = market_data_service.get_symbol_details(symbol, market)
+            live_price = float(details["price"])
+        except Exception:
+            live_price = buy_price if buy_price > 0 else 0
+
+        pnl_pct = ((live_price - buy_price) / buy_price * 100) if buy_price > 0 else 0
+
+        signal_dicts.append({
+            "symbol": symbol,
+            "market": market,
+            "price": live_price,
+            "action": "hold",
+            "confidence": 0.5,
+            "risk_pct": 2.0,
+            "expected_return_pct": 0.0,
+            "target_price": 0.0,
+            "reason": f"Handmatig toegevoegd | Aankoop: €{buy_price:.2f} | "
+                      f"Nu: €{live_price:.2f} | P/L: {pnl_pct:+.2f}%"
+                      + (f" | {quantity:.4f} stuks" if quantity > 0 else ""),
+        })
+
+    if not signal_dicts:
+        return []
+
+    trade_history = data_service.get_trade_history()
+    return ai_analysis_service.analyze_signals(signal_dicts, trade_history=trade_history)
 
 
 @app.post("/trade", dependencies=[Depends(verify_token)], response_model=TradeResult)
