@@ -16,6 +16,7 @@ from services.advice_engine import AdviceEngine
 from services.data_service import DataService
 from services.learning_agent import LearningAgent
 from services.market_data_service import MarketDataService
+from services.auto_trader import AutoTrader
 from services.trade_engine import execute_trade as run_trade
 
 app = FastAPI(title="AI Trading Simulator API", version="2.0.0")
@@ -34,6 +35,13 @@ market_data_service = MarketDataService()
 advice_engine = AdviceEngine(market_data_service)
 alert_service = AlertService(data_service)
 ai_analysis_service = AiAnalysisService()
+auto_trader = AutoTrader(
+    data_service=data_service,
+    market_data_service=market_data_service,
+    advice_engine=advice_engine,
+    learning_agent=learning_agent,
+    limits=LIMITS,
+)
 
 
 @app.on_event("startup")
@@ -49,6 +57,19 @@ def startup_event() -> None:
     except Exception as exc:
         logging.getLogger(__name__).warning("Failed to start prefetch scheduler: %s", exc)
 
+    # Auto-trader automatisch starten als AUTO_TRADE=true
+    try:
+        auto_trade_env = os.environ.get("AUTO_TRADE", "false").lower()
+        if auto_trade_env in ("1", "true", "yes"):
+            interval = int(os.environ.get("AUTO_TRADE_INTERVAL", "10"))
+            auto_trader.start(interval_minutes=interval)
+        else:
+            logging.getLogger(__name__).info(
+                "Auto-trader niet gestart (AUTO_TRADE=%s)", auto_trade_env
+            )
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Failed to start auto-trader: %s", exc)
+
 # Limieten (day-trading)
 LIMITS = {
     "max_position": float("inf"),
@@ -56,10 +77,45 @@ LIMITS = {
     "max_trades_per_day": 50,
 }
 
+# Auto-trader moet na LIMITS gedefinieerd worden — de instantie staat boven startup_event
+
 
 @app.get("/health")
 def health() -> Dict[str, str]:
     return {"status": "ok"}
+
+
+# ══════════════════════════════════════════════════════════════════════
+# AUTO-TRADER ENDPOINTS
+# ══════════════════════════════════════════════════════════════════════
+
+@app.get("/auto-trader/status")
+def auto_trader_status() -> Dict[str, Any]:
+    """Status van de autonome trading-bot (publiek leesbaar)."""
+    return auto_trader.get_status()
+
+
+@app.post("/auto-trader/start", dependencies=[Depends(verify_token)])
+def auto_trader_start(payload: Dict[str, Any] | None = None) -> Dict[str, Any]:
+    """Start de autonome trading-bot. Body: {"interval_minutes": 10}"""
+    interval = 10
+    if payload and "interval_minutes" in payload:
+        interval = int(payload["interval_minutes"])
+    started = auto_trader.start(interval_minutes=interval)
+    if not started:
+        if auto_trader.is_running():
+            raise HTTPException(status_code=409, detail="Auto-trader draait al.")
+        raise HTTPException(status_code=503, detail="GROQ_API_KEY ontbreekt; auto-trader kan niet starten.")
+    return auto_trader.get_status()
+
+
+@app.post("/auto-trader/stop", dependencies=[Depends(verify_token)])
+def auto_trader_stop() -> Dict[str, Any]:
+    """Stop de autonome trading-bot."""
+    stopped = auto_trader.stop()
+    if not stopped:
+        raise HTTPException(status_code=409, detail="Auto-trader draait niet.")
+    return auto_trader.get_status()
 
 
 @app.get("/signals", response_model=List[Signal])
