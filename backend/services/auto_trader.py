@@ -402,6 +402,7 @@ class AutoTrader:
             signals = self._advice.build_signals()
             self._learning.learn(history, signals)
             self._advice.apply_learned_params(self._learning.get_engine_params())
+            self._learning.save_params(self._data)
         except Exception as exc:
             logger.warning("Learning-stap mislukt: %s", exc)
 

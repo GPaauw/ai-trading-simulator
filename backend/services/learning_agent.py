@@ -1,4 +1,5 @@
-from typing import Dict, List
+import json
+from typing import Any, Dict, List
 
 from models.signal import Signal
 from models.trade import TradeResult
@@ -104,6 +105,28 @@ class LearningAgent:
     def get_engine_params(self) -> Dict[str, float]:
         """Return de geleerde parameters die naar AdviceEngine gaan."""
         return dict(self._params)
+
+    def save_params(self, data_service: Any) -> None:
+        """Sla geleerde parameters permanent op in de database (overleeft herstart)."""
+        data_service._set_setting("learning_params", json.dumps(self._params))
+        data_service._set_setting("learning_iterations", str(self._total_iterations))
+
+    def load_params(self, data_service: Any) -> None:
+        """Laad eerder opgeslagen parameters uit de database."""
+        raw = data_service._get_setting("learning_params", "")
+        if raw:
+            try:
+                loaded = json.loads(raw)
+                for k in self._params:
+                    if k in loaded:
+                        self._params[k] = float(loaded[k])
+            except Exception:
+                pass
+        iterations_str = data_service._get_setting("learning_iterations", "0")
+        try:
+            self._total_iterations = int(iterations_str)
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------
     # Parameter-tuning

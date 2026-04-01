@@ -1,3 +1,4 @@
+import json
 import os
 import sqlite3
 from datetime import date, datetime, timezone
@@ -8,6 +9,52 @@ from models.trade import TradeResult
 
 
 SELL_QUANTITY_EPSILON = 1e-6
+
+# DATABASE_URL instellen → PostgreSQL (Supabase). Niet instellen → lokale SQLite.
+_DATABASE_URL = os.getenv("DATABASE_URL", "")
+
+
+class _PgCursor:
+    """Maakt psycopg2-cursor compatibel met sqlite3 (fetchone/fetchall)."""
+
+    def __init__(self, cursor: Any) -> None:
+        self._cur = cursor
+
+    def fetchone(self) -> Any:
+        return self._cur.fetchone()
+
+    def fetchall(self) -> Any:
+        return self._cur.fetchall()
+
+
+class _PgConn:
+    """Maakt psycopg2-verbinding compatibel met sqlite3 conn.execute()-interface."""
+
+    def __init__(self, dsn: str) -> None:
+        import psycopg2  # noqa: PLC0415
+        import psycopg2.extras  # noqa: PLC0415
+
+        self._conn = psycopg2.connect(dsn, cursor_factory=psycopg2.extras.RealDictCursor)
+
+    def execute(self, sql: str, params: tuple = ()) -> _PgCursor:
+        # Vervang SQLite '?' placeholders door PostgreSQL '%s'
+        pg_sql = sql.replace("?", "%s")
+        cur = self._conn.cursor()
+        cur.execute(pg_sql, params)
+        return _PgCursor(cur)
+
+    def commit(self) -> None:
+        self._conn.commit()
+
+    def __enter__(self) -> "_PgConn":
+        return self
+
+    def __exit__(self, exc_type: Any, *_: Any) -> None:
+        if exc_type:
+            self._conn.rollback()
+        else:
+            self._conn.commit()
+        self._conn.close()
 
 
 class DataService:
@@ -40,10 +87,21 @@ class DataService:
         with self._connect() as conn:
             conn.execute(
                 """
-                INSERT OR REPLACE INTO trade_history (
+                INSERT INTO trade_history (
                     id, symbol, action, amount, quantity, price, profit_loss, timestamp, status,
                     expected_return_pct, risk_pct
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (id) DO UPDATE SET
+                    symbol = excluded.symbol,
+                    action = excluded.action,
+                    amount = excluded.amount,
+                    quantity = excluded.quantity,
+                    price = excluded.price,
+                    profit_loss = excluded.profit_loss,
+                    timestamp = excluded.timestamp,
+                    status = excluded.status,
+                    expected_return_pct = excluded.expected_return_pct,
+                    risk_pct = excluded.risk_pct
                 """,
                 (
                     trade.id,
@@ -382,12 +440,23 @@ class DataService:
             row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
         return str(row["value"]) if row else default
 
-    def _connect(self) -> sqlite3.Connection:
+    def _set_setting(self, key: str, value: str) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO settings(key, value) VALUES (?, ?)"
+                " ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (key, value),
+            )
+            conn.commit()
+
+    def _connect(self) -> Any:
+        if _DATABASE_URL:
+            return _PgConn(_DATABASE_URL)
         conn = sqlite3.connect(self._db_path)
         conn.row_factory = sqlite3.Row
         return conn
 
-    def _trade_from_row(self, row: sqlite3.Row) -> TradeResult:
+    def _trade_from_row(self, row: Any) -> TradeResult:
         return TradeResult(
             id=str(row["id"]),
             symbol=str(row["symbol"]),

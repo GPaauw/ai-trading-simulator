@@ -66,6 +66,14 @@ def startup_event() -> None:
     except Exception as exc:
         logging.getLogger(__name__).warning("Failed to start auto-trader: %s", exc)
 
+    # Laad eerder geleerde parameters uit de database
+    try:
+        learning_agent.load_params(data_service)
+        advice_engine.apply_learned_params(learning_agent.get_engine_params())
+        logging.getLogger(__name__).info("Geleerde parameters geladen uit database.")
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Kon leerparameters niet laden: %s", exc)
+
 
 @app.get("/health")
 def health() -> Dict[str, str]:
@@ -386,6 +394,7 @@ def learn() -> Dict[str, Any]:
 
     # Pas geleerde parameters toe op de advice engine
     advice_engine.apply_learned_params(learning_agent.get_engine_params())
+    learning_agent.save_params(data_service)
 
     return {"parameters": parameters}
 
