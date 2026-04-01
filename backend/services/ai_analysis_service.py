@@ -18,7 +18,8 @@ logger = logging.getLogger(__name__)
 
 _GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
 _MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
-_CACHE_TTL = 5 * 60  # 5 minuten
+_CACHE_TTL = 30 * 60  # 30 minuten — beperk Gemini-aanroepen binnen free-tier quota
+_RATE_LIMIT_COOLDOWN = 60  # seconden wachten na een 429
 _REQUEST_TIMEOUT_SECONDS = 30
 
 
@@ -26,6 +27,7 @@ class AiAnalysisService:
     def __init__(self) -> None:
         self._cache: Dict[str, Dict] = {}
         self._trade_lessons: str = ""
+        self._rate_limited_until: float = 0.0  # monotonic timestamp; 0 = geen cooldown
 
     def _get_api_key(self) -> str | None:
         key = os.environ.get("GEMINI_API_KEY", "").strip()
@@ -123,6 +125,12 @@ class AiAnalysisService:
             logger.warning("GEMINI_API_KEY ontbreekt; technische fallback wordt gebruikt.")
             return self._build_fallback_signals(signals, "AI-key ontbreekt; technische analyse wordt gebruikt.")
 
+        # Rate-limit cooldown check: sla Gemini-call over tot cooldown verstreken is
+        if time.monotonic() < self._rate_limited_until:
+            remaining = int(self._rate_limited_until - time.monotonic())
+            logger.info("Gemini rate-limit actief; nog %ds wachten.", remaining)
+            return self._build_fallback_signals(signals, f"Gemini quota bereikt; automatisch hervat over ~{remaining}s.")
+
         # Cache check
         cache_key = self._make_cache_key(signals, market_filter)
         cached = self._get_cache(cache_key)
@@ -139,6 +147,14 @@ class AiAnalysisService:
                 self._set_cache(cache_key, results)
             return results
         except Exception as exc:
+            msg = str(exc)
+            if "429" in msg:
+                self._rate_limited_until = time.monotonic() + _RATE_LIMIT_COOLDOWN
+                logger.warning(
+                    "Gemini 429 TooManyRequests; aanroepen gepauzeerd voor %ds.",
+                    _RATE_LIMIT_COOLDOWN,
+                )
+                return self._build_fallback_signals(signals, "Gemini quota momenteel bereikt; analyse herva automatisch.")
             logger.error("Gemini AI-analyse mislukt: %s", exc)
             return self._build_fallback_signals(signals, "AI-analyse tijdelijk niet beschikbaar; technische analyse wordt gebruikt.")
 
@@ -252,7 +268,7 @@ class AiAnalysisService:
         except HTTPError as exc:
             error_body = exc.read().decode("utf-8", errors="replace")
             logger.error("Gemini HTTP-fout %s: %s", exc.code, error_body)
-            raise RuntimeError(f"Gemini HTTP-fout {exc.code}") from exc
+            raise RuntimeError(f"Gemini HTTP-fout {exc.code} — {error_body[:200]}") from exc
         except URLError as exc:
             logger.error("Gemini netwerkfout: %s", exc)
             raise RuntimeError("Gemini netwerkfout") from exc
