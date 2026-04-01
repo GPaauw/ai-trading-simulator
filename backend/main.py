@@ -35,24 +35,36 @@ LIMITS: Dict[str, Any] = {
     "max_trades_per_day": 50,
 }
 
-# Singletons (in-memory state per worker)
-data_service = DataService()
-learning_agent = LearningAgent()
-market_data_service = MarketDataService()
-advice_engine = AdviceEngine(market_data_service)
-alert_service = AlertService(data_service)
-ai_analysis_service = AiAnalysisService()
-auto_trader = AutoTrader(
-    data_service=data_service,
-    market_data_service=market_data_service,
-    advice_engine=advice_engine,
-    learning_agent=learning_agent,
-    limits=LIMITS,
-)
+# Singletons — worden geïnitialiseerd in startup_event zodat de DB-verbinding
+# pas wordt gemaakt nadat FastAPI volledig is opgestart (netwerk beschikbaar op Render).
+data_service: Any = None
+learning_agent: Any = None
+market_data_service: Any = None
+advice_engine: Any = None
+alert_service: Any = None
+ai_analysis_service: Any = None
+auto_trader: Any = None
 
 
 @app.on_event("startup")
 def startup_event() -> None:
+    global data_service, learning_agent, market_data_service, advice_engine, \
+           alert_service, ai_analysis_service, auto_trader
+
+    data_service = DataService()
+    learning_agent = LearningAgent()
+    market_data_service = MarketDataService()
+    advice_engine = AdviceEngine(market_data_service)
+    alert_service = AlertService(data_service)
+    ai_analysis_service = AiAnalysisService()
+    auto_trader = AutoTrader(
+        data_service=data_service,
+        market_data_service=market_data_service,
+        advice_engine=advice_engine,
+        learning_agent=learning_agent,
+        limits=LIMITS,
+    )
+
     try:
         market_data_service.start_prefetch_scheduler(interval_seconds=300)
     except Exception as exc:
