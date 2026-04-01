@@ -28,6 +28,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Limieten (day-trading)
+LIMITS: Dict[str, Any] = {
+    "max_position": float("inf"),
+    "max_risk": 0.01,
+    "max_trades_per_day": 50,
+}
+
 # Singletons (in-memory state per worker)
 data_service = DataService()
 learning_agent = LearningAgent()
@@ -69,15 +76,6 @@ def startup_event() -> None:
             )
     except Exception as exc:
         logging.getLogger(__name__).warning("Failed to start auto-trader: %s", exc)
-
-# Limieten (day-trading)
-LIMITS = {
-    "max_position": float("inf"),
-    "max_risk": 0.01,
-    "max_trades_per_day": 50,
-}
-
-# Auto-trader moet na LIMITS gedefinieerd worden — de instantie staat boven startup_event
 
 
 @app.get("/health")
