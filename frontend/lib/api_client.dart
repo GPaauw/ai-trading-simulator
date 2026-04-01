@@ -239,4 +239,38 @@ class ApiClient {
     final List<dynamic> data = jsonDecode(response.body) as List<dynamic>;
     return data.map((e) => e as Map<String, dynamic>).toList();
   }
+
+  static Future<Map<String, dynamic>> getAutoTraderSummary() async {
+    final response = await http.get(
+      Uri.parse('$kBackendUrl/auto-trader/summary'),
+      headers: _headers(),
+    );
+    if (response.statusCode != 200) {
+      throw Exception('Fout bij ophalen auto-trader samenvatting (${response.statusCode})');
+    }
+    return jsonDecode(response.body) as Map<String, dynamic>;
+  }
+
+  static Future<Map<String, dynamic>> startAutoTrader({int intervalMinutes = 5}) async {
+    final response = await http.post(
+      Uri.parse('$kBackendUrl/auto-trader/start'),
+      headers: _headers(),
+      body: jsonEncode({'interval_minutes': intervalMinutes}),
+    );
+    if (response.statusCode != 200) {
+      throw Exception(_extractDetail(response.body, 'Fout bij starten auto-trader (${response.statusCode})'));
+    }
+    return jsonDecode(response.body) as Map<String, dynamic>;
+  }
+
+  static Future<Map<String, dynamic>> stopAutoTrader() async {
+    final response = await http.post(
+      Uri.parse('$kBackendUrl/auto-trader/stop'),
+      headers: _headers(),
+    );
+    if (response.statusCode != 200) {
+      throw Exception(_extractDetail(response.body, 'Fout bij stoppen auto-trader (${response.statusCode})'));
+    }
+    return jsonDecode(response.body) as Map<String, dynamic>;
+  }
 }

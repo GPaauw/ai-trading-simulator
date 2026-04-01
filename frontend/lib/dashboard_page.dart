@@ -53,10 +53,28 @@ class _DashboardPageState extends State<DashboardPage>
   String? _searchError;
   String? _trackedAnalysisError;
 
+  // ── Auto-Trader tab state ──
+  Map<String, dynamic>? _autoTraderSummary;
+  bool _loadingAutoTrader = false;
+  String? _autoTraderError;
+  Timer? _autoTraderPollTimer;
+
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 7, vsync: this);
+    _tabController = TabController(length: 8, vsync: this);
+    _tabController.addListener(() {
+      if (_tabController.index == 7 && !_tabController.indexIsChanging) {
+        if (_autoTraderSummary == null && !_loadingAutoTrader) {
+          _refreshAutoTrader();
+        }
+      }
+    });
+    _autoTraderPollTimer = Timer.periodic(const Duration(seconds: 30), (_) {
+      if (mounted && _tabController.index == 7) {
+        _refreshAutoTrader();
+      }
+    });
     _refreshAll();
   }
 
@@ -65,6 +83,7 @@ class _DashboardPageState extends State<DashboardPage>
     _tabController.dispose();
     _searchController.dispose();
     _prefetchPollTimer?.cancel();
+    _autoTraderPollTimer?.cancel();
     super.dispose();
   }
 
@@ -78,6 +97,7 @@ class _DashboardPageState extends State<DashboardPage>
         _refreshHistory(),
         _refreshPortfolio(),
         _refreshAiSignals(),
+        _refreshAutoTrader(),
       ]);
     } finally {
       _stopPrefetchPolling();
@@ -571,6 +591,7 @@ class _DashboardPageState extends State<DashboardPage>
             Tab(icon: Icon(Icons.trending_up), text: 'Langetermijn'),
             Tab(icon: Icon(Icons.search), text: 'Zoeken'),
             Tab(icon: Icon(Icons.account_balance_wallet), text: 'Portfolio'),
+            Tab(icon: Icon(Icons.smart_toy), text: 'Auto-Trader'),
           ],
         ),
       ),
@@ -584,6 +605,7 @@ class _DashboardPageState extends State<DashboardPage>
           _buildLongtermTab(),
           _buildSearchTab(),
           _buildPortfolioTab(),
+          _buildAutoTraderTab(),
         ],
       ),
     );
@@ -1776,5 +1798,400 @@ class _DashboardPageState extends State<DashboardPage>
       default:
         return market.toUpperCase();
     }
+  }
+
+  // ════════════════════════════════════════════════════════════════════
+  // AUTO-TRADER TAB
+  // ════════════════════════════════════════════════════════════════════
+
+  Future<void> _refreshAutoTrader() async {
+    if (mounted) setState(() { _loadingAutoTrader = true; _autoTraderError = null; });
+    try {
+      final summary = await ApiClient.getAutoTraderSummary();
+      if (mounted) setState(() => _autoTraderSummary = summary);
+    } catch (e) {
+      if (mounted) setState(() => _autoTraderError = e.toString());
+    } finally {
+      if (mounted) setState(() => _loadingAutoTrader = false);
+    }
+  }
+
+  Future<void> _startAutoTrader() async {
+    try {
+      await ApiClient.startAutoTrader(intervalMinutes: 5);
+      await _refreshAutoTrader();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Auto-trader gestart!'), backgroundColor: Colors.green),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Fout: $e'), backgroundColor: Colors.red[700]),
+      );
+    }
+  }
+
+  Future<void> _stopAutoTrader() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Auto-trader stoppen?'),
+        content: const Text('De bot stopt na de huidige cyclus. Open posities blijven open.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(ctx).pop(false), child: const Text('Annuleren')),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Colors.red),
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Stop'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    try {
+      await ApiClient.stopAutoTrader();
+      await _refreshAutoTrader();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Auto-trader gestopt.'), backgroundColor: Colors.orange),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Fout: $e'), backgroundColor: Colors.red[700]),
+      );
+    }
+  }
+
+  Widget _buildAutoTraderTab() {
+    final s = _autoTraderSummary;
+    final isRunning = s?['running'] as bool? ?? false;
+    final loggedIn = ApiClient.isLoggedIn();
+
+    return RefreshIndicator(
+      onRefresh: _refreshAutoTrader,
+      child: SingleChildScrollView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        padding: const EdgeInsets.all(16),
+        child: Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 980),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                // ── Status kaart ──
+                Card(
+                  child: Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Row(
+                              children: [
+                                Icon(
+                                  Icons.smart_toy,
+                                  color: isRunning ? Colors.green : Colors.grey,
+                                ),
+                                const SizedBox(width: 8),
+                                Text('Auto-Trader',
+                                    style: Theme.of(context).textTheme.titleLarge),
+                                const SizedBox(width: 12),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                                  decoration: BoxDecoration(
+                                    color: isRunning
+                                        ? Colors.green.withOpacity(0.2)
+                                        : Colors.grey.withOpacity(0.2),
+                                    borderRadius: BorderRadius.circular(12),
+                                  ),
+                                  child: Text(
+                                    isRunning ? 'ACTIEF' : 'GESTOPT',
+                                    style: TextStyle(
+                                      color: isRunning ? Colors.green : Colors.grey,
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 12,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                            Row(
+                              children: [
+                                IconButton(
+                                  icon: _loadingAutoTrader
+                                      ? const SizedBox(width: 20, height: 20,
+                                          child: CircularProgressIndicator(strokeWidth: 2))
+                                      : const Icon(Icons.refresh),
+                                  onPressed: _loadingAutoTrader ? null : _refreshAutoTrader,
+                                ),
+                                if (loggedIn) ...[
+                                  const SizedBox(width: 4),
+                                  isRunning
+                                      ? OutlinedButton.icon(
+                                          style: OutlinedButton.styleFrom(foregroundColor: Colors.red),
+                                          icon: const Icon(Icons.stop),
+                                          label: const Text('Stop'),
+                                          onPressed: _stopAutoTrader,
+                                        )
+                                      : FilledButton.icon(
+                                          style: FilledButton.styleFrom(backgroundColor: Colors.green),
+                                          icon: const Icon(Icons.play_arrow),
+                                          label: const Text('Start'),
+                                          onPressed: _startAutoTrader,
+                                        ),
+                                ],
+                              ],
+                            ),
+                          ],
+                        ),
+                        if (_autoTraderError != null) ...[
+                          const SizedBox(height: 8),
+                          Text(_autoTraderError!,
+                              style: TextStyle(color: Theme.of(context).colorScheme.error)),
+                        ],
+                        if (s != null) ...[
+                          const Divider(height: 24),
+                          Wrap(
+                            spacing: 24,
+                            runSpacing: 8,
+                            children: [
+                              _atStat('Startkapitaal',
+                                  '€${(s['start_balance'] as num?)?.toStringAsFixed(2) ?? '2000.00'}'),
+                              _atStat('Cash',
+                                  '€${(s['cash'] as num?)?.toStringAsFixed(2) ?? '0.00'}'),
+                              _atStat('Marktwaarde',
+                                  '€${(s['market_value'] as num?)?.toStringAsFixed(2) ?? '0.00'}'),
+                              _atStat('Totaal vermogen',
+                                  '€${(s['total_equity'] as num?)?.toStringAsFixed(2) ?? '0.00'}'),
+                              _atStat('Totaal P/L',
+                                  '${(s['total_pnl'] as num? ?? 0) >= 0 ? '+' : ''}€${(s['total_pnl'] as num?)?.toStringAsFixed(2) ?? '0.00'}',
+                                  color: (s['total_pnl'] as num? ?? 0) >= 0
+                                      ? Colors.green
+                                      : Colors.red),
+                              _atStat('Rendement',
+                                  '${(s['total_pnl_pct'] as num? ?? 0) >= 0 ? '+' : ''}${(s['total_pnl_pct'] as num?)?.toStringAsFixed(2) ?? '0.00'}%',
+                                  color: (s['total_pnl_pct'] as num? ?? 0) >= 0
+                                      ? Colors.green
+                                      : Colors.red),
+                              _atStat('Cycli voltooid',
+                                  '${s['cycles_completed'] ?? 0}'),
+                              _atStat('Trades uitgevoerd',
+                                  '${s['total_trades_executed'] ?? 0}'),
+                              _atStat('Interval',
+                                  '${s['interval_minutes'] ?? 5} min'),
+                              _atStat('AI modus',
+                                  s['ai_mode'] == 'groq' ? 'Groq AI' : 'Technisch'),
+                            ],
+                          ),
+                          if (s['last_cycle_time'] != null) ...[
+                            const SizedBox(height: 8),
+                            Text(
+                              'Laatste cyclus: ${(s['last_cycle_time'] as String).substring(0, 19).replaceFirst('T', ' ')} UTC',
+                              style: const TextStyle(fontSize: 12, color: Colors.grey),
+                            ),
+                          ],
+                        ] else if (_loadingAutoTrader)
+                          const Padding(
+                            padding: EdgeInsets.symmetric(vertical: 16),
+                            child: Center(child: CircularProgressIndicator()),
+                          ),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 16),
+
+                // ── Open posities ──
+                Card(
+                  child: Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('Open posities',
+                            style: Theme.of(context).textTheme.titleLarge),
+                        const Divider(),
+                        if (s == null || (s['open_positions'] as List?)?.isEmpty != false)
+                          const Text('Geen open posities.')
+                        else
+                          ListView.separated(
+                            shrinkWrap: true,
+                            physics: const NeverScrollableScrollPhysics(),
+                            itemCount: (s['open_positions'] as List).length,
+                            separatorBuilder: (_, __) => const Divider(height: 1),
+                            itemBuilder: (_, i) {
+                              final p = (s['open_positions'] as List)[i] as Map<String, dynamic>;
+                              final pnl = (p['unrealized_pnl'] as num?)?.toDouble() ?? 0.0;
+                              final pnlPct = (p['unrealized_pnl_pct'] as num?)?.toDouble() ?? 0.0;
+                              final pnlColor = pnl >= 0 ? Colors.green : Colors.red;
+                              return ListTile(
+                                leading: CircleAvatar(
+                                  backgroundColor: pnl >= 0 ? Colors.green : Colors.red,
+                                  child: Text(
+                                    _marketLabel(p['market'] as String? ?? '').substring(0, 1),
+                                    style: const TextStyle(color: Colors.white, fontSize: 12),
+                                  ),
+                                ),
+                                title: Text(
+                                  '${p['symbol']} (${_marketLabel(p['market'] as String? ?? '')}) | '
+                                  '${(p['quantity'] as num?)?.toStringAsFixed(4) ?? '0'} stuks',
+                                ),
+                                subtitle: Text(
+                                  'Ingekocht: €${(p['avg_entry_price'] as num?)?.toStringAsFixed(2)} | '
+                                  'Nu: €${(p['current_price'] as num?)?.toStringAsFixed(2)} | '
+                                  'Waarde: €${(p['current_value'] as num?)?.toStringAsFixed(2)}',
+                                ),
+                                trailing: Column(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  crossAxisAlignment: CrossAxisAlignment.end,
+                                  children: [
+                                    Text(
+                                      '${pnl >= 0 ? '+' : ''}€${pnl.toStringAsFixed(2)}',
+                                      style: TextStyle(color: pnlColor, fontWeight: FontWeight.bold),
+                                    ),
+                                    Text(
+                                      '${pnlPct >= 0 ? '+' : ''}${pnlPct.toStringAsFixed(2)}%',
+                                      style: TextStyle(color: pnlColor, fontSize: 12),
+                                    ),
+                                  ],
+                                ),
+                              );
+                            },
+                          ),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 16),
+
+                // ── Recente trades ──
+                Card(
+                  child: Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('Recente trades',
+                            style: Theme.of(context).textTheme.titleLarge),
+                        const Divider(),
+                        if (s == null || (s['recent_trades'] as List?)?.isEmpty != false)
+                          const Text('Nog geen trades uitgevoerd.')
+                        else
+                          ListView.separated(
+                            shrinkWrap: true,
+                            physics: const NeverScrollableScrollPhysics(),
+                            itemCount: (s['recent_trades'] as List).length,
+                            separatorBuilder: (_, __) => const Divider(height: 1),
+                            itemBuilder: (_, i) {
+                              final t = (s['recent_trades'] as List)[i] as Map<String, dynamic>;
+                              final action = t['action'] as String? ?? '';
+                              final pl = (t['profit_loss'] as num?)?.toDouble() ?? 0.0;
+                              final isProfit = pl >= 0;
+                              final isBuy = action == 'buy';
+                              final iconColor = isBuy
+                                  ? Colors.blue
+                                  : isProfit ? Colors.green : Colors.red;
+                              final ts = (t['timestamp'] as String? ?? '').length >= 19
+                                  ? (t['timestamp'] as String).substring(0, 19).replaceFirst('T', ' ')
+                                  : (t['timestamp'] as String? ?? '');
+                              return ListTile(
+                                leading: Icon(
+                                  isBuy ? Icons.add_shopping_cart : Icons.sell,
+                                  color: iconColor,
+                                ),
+                                title: Text(
+                                  '${t['symbol']} ${action.toUpperCase()} | '
+                                  '${(t['quantity'] as num?)?.toStringAsFixed(4) ?? '0'} stuks @ €${(t['price'] as num?)?.toStringAsFixed(2) ?? '0'}',
+                                ),
+                                subtitle: Text('$ts | ${t['status'] ?? ''}'),
+                                trailing: isBuy
+                                    ? const SizedBox.shrink()
+                                    : Text(
+                                        '${isProfit ? '+' : ''}€${pl.toStringAsFixed(2)}',
+                                        style: TextStyle(
+                                          color: isProfit ? Colors.green : Colors.red,
+                                          fontWeight: FontWeight.bold,
+                                        ),
+                                      ),
+                              );
+                            },
+                          ),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 16),
+
+                // ── Cyclus-geschiedenis ──
+                if (s != null && (s['cycle_summaries'] as List?)?.isNotEmpty == true)
+                  Card(
+                    child: Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('Laatste cycli',
+                              style: Theme.of(context).textTheme.titleLarge),
+                          const Divider(),
+                          ListView.separated(
+                            shrinkWrap: true,
+                            physics: const NeverScrollableScrollPhysics(),
+                            itemCount: (s['cycle_summaries'] as List).length,
+                            separatorBuilder: (_, __) => const Divider(height: 1),
+                            itemBuilder: (_, i) {
+                              final cycles = s['cycle_summaries'] as List;
+                              final c = cycles[cycles.length - 1 - i] as Map<String, dynamic>;
+                              final ts = (c['timestamp'] as String? ?? '').length >= 19
+                                  ? (c['timestamp'] as String).substring(0, 19).replaceFirst('T', ' ')
+                                  : (c['timestamp'] as String? ?? '');
+                              final executed = c['executed_count'] as int? ?? 0;
+                              final decided = c['decisions_count'] as int? ?? 0;
+                              final cash = (c['cash_after'] as num?)?.toStringAsFixed(2) ?? '0';
+                              final aiMode = c['ai_mode'] as String? ?? 'technical';
+                              return ListTile(
+                                leading: CircleAvatar(
+                                  backgroundColor: executed > 0 ? Colors.indigo : Colors.grey,
+                                  child: Text('${c['cycle'] ?? ''}',
+                                      style: const TextStyle(color: Colors.white, fontSize: 12)),
+                                ),
+                                title: Text('Cyclus ${c['cycle']} — $ts UTC'),
+                                subtitle: Text(
+                                  '$executed van $decided beslissingen uitgevoerd | '
+                                  'Cash: €$cash | ${aiMode == 'groq' ? 'Groq AI' : 'Technisch'}',
+                                ),
+                              );
+                            },
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _atStat(String label, String value, {Color? color}) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(label, style: const TextStyle(fontSize: 11, color: Colors.grey)),
+        Text(
+          value,
+          style: TextStyle(
+            fontWeight: FontWeight.bold,
+            fontSize: 14,
+            color: color,
+          ),
+        ),
+      ],
+    );
   }
 }

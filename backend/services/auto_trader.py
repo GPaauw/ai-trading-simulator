@@ -24,8 +24,9 @@ from services.trade_engine import execute_trade
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_INTERVAL_MINUTES = 10
+_DEFAULT_INTERVAL_MINUTES = 5
 _MAX_TRADES_PER_CYCLE = 5
+_MAX_CYCLE_HISTORY = 50
 
 
 class AutoTrader:
@@ -57,6 +58,7 @@ class AutoTrader:
         self._last_cycle_decisions: List[Dict] = []
         self._last_error: Optional[str] = None
         self._started_at: Optional[str] = None
+        self._cycle_summaries: List[Dict] = []
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -66,19 +68,13 @@ class AutoTrader:
         """Start de autonome trading-loop in een achtergrondthread."""
         if self._running:
             return False
-        if not self._groq.is_available():
-            logger.error("Auto-trader kan niet starten: GROQ_API_KEY ontbreekt.")
-            return False
-
-        self._interval_minutes = max(5, interval_minutes)
+        self._interval_minutes = max(1, interval_minutes)
         self._running = True
         self._started_at = datetime.now(timezone.utc).isoformat()
         self._thread = threading.Thread(target=self._loop, daemon=True, name="auto-trader")
         self._thread.start()
-        logger.info(
-            "Auto-trader gestart (interval=%dm, model=Groq/Llama 3.3 70B).",
-            self._interval_minutes,
-        )
+        ai_mode = "Groq/Llama 3.3 70B" if self._groq.is_available() else "technisch (geen Groq)"
+        logger.info("Auto-trader gestart (interval=%dm, modus=%s).", self._interval_minutes, ai_mode)
         return True
 
     def stop(self) -> bool:
@@ -121,6 +117,8 @@ class AutoTrader:
             "last_error": self._last_error,
             "groq_available": self._groq.is_available(),
             "groq_rate_limited": self._groq.is_rate_limited(),
+            "ai_mode": "groq" if self._groq.is_available() else "technical",
+            "cycle_summaries": self._cycle_summaries[-10:],
             # Portfolio snapshot
             "cash": round(cash, 2),
             "market_value": round(total_market_value, 2),
@@ -175,14 +173,17 @@ class AutoTrader:
         perf_summary = self._build_performance_summary()
 
         # 4. Vraag AI om beslissingen
-        signal_dicts = [s.model_dump() for s in signals]
-        decisions = self._groq.decide_trades(
-            signals=signal_dicts,
-            holdings=holdings,
-            cash=cash,
-            trade_history_summary=trade_summary,
-            performance_summary=perf_summary,
-        )
+        if self._groq.is_available() and not self._groq.is_rate_limited():
+            signal_dicts = [s.model_dump() for s in signals]
+            decisions = self._groq.decide_trades(
+                signals=signal_dicts,
+                holdings=holdings,
+                cash=cash,
+                trade_history_summary=trade_summary,
+                performance_summary=perf_summary,
+            )
+        else:
+            decisions = self._decide_without_ai(signals, holdings, cash)
 
         self._last_cycle_decisions = decisions
         logger.info("AI gaf %d beslissingen.", len(decisions))
@@ -207,6 +208,18 @@ class AutoTrader:
             "Auto-trader cyclus %d voltooid: %d/%d trades uitgevoerd.",
             self._cycles_completed, executed, len(decisions),
         )
+        cycle_summary = {
+            "cycle": self._cycles_completed,
+            "timestamp": now,
+            "decisions_count": len(decisions),
+            "executed_count": executed,
+            "decisions": decisions[:5],
+            "cash_after": round(self._data.get_cash_balance(), 2),
+            "ai_mode": "groq" if self._groq.is_available() else "technical",
+        }
+        self._cycle_summaries.append(cycle_summary)
+        if len(self._cycle_summaries) > _MAX_CYCLE_HISTORY:
+            self._cycle_summaries = self._cycle_summaries[-_MAX_CYCLE_HISTORY:]
 
     # ------------------------------------------------------------------
     # Signalen ophalen
@@ -307,6 +320,59 @@ class AutoTrader:
             return False
 
         return False
+
+    def _decide_without_ai(self, signals: list, holdings: List[Dict], cash: float) -> List[Dict]:
+        """Eenvoudige rule-based beslissingen als Groq niet beschikbaar is."""
+        decisions: List[Dict] = []
+
+        # Verkoop posities met >5% winst of <-3% verlies (stop-loss)
+        for holding in holdings:
+            symbol = str(holding["symbol"])
+            market = str(holding["market"])
+            try:
+                instrument = self._market.get_instrument(symbol, market)
+                price = float(self._market.get_snapshot(instrument)["price"])
+                avg_price = float(holding["avg_entry_price"])
+                if avg_price <= 0:
+                    continue
+                pnl_pct = (price - avg_price) / avg_price * 100
+                if pnl_pct >= 5.0:
+                    decisions.append({
+                        "symbol": symbol,
+                        "action": "sell",
+                        "fraction": 1.0,
+                        "reason": f"Winst genomen: +{pnl_pct:.1f}%",
+                    })
+                elif pnl_pct <= -3.0:
+                    decisions.append({
+                        "symbol": symbol,
+                        "action": "sell",
+                        "fraction": 1.0,
+                        "reason": f"Stop-loss geraakt: {pnl_pct:.1f}%",
+                    })
+            except Exception:
+                continue
+
+        # Koop top-signalen als er genoeg cash is
+        if cash >= 50:
+            held_symbols = {str(h["symbol"]).upper() for h in holdings}
+            buy_signals = sorted(
+                [s for s in signals if hasattr(s, "action") and s.action == "buy"],
+                key=lambda s: getattr(s, "ranking_score", 0),
+                reverse=True,
+            )
+            for signal in buy_signals[:2]:
+                symbol = getattr(signal, "symbol", "").upper()
+                if not symbol or symbol in held_symbols:
+                    continue
+                decisions.append({
+                    "symbol": symbol,
+                    "action": "buy",
+                    "fraction": 0.25,
+                    "reason": f"Top technisch signaal: {getattr(signal, 'reason', 'n/a')}",
+                })
+
+        return decisions
 
     def _detect_market(self, symbol: str) -> str:
         """Probeer het juiste markttype te detecteren voor een symbool."""

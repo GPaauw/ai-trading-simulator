@@ -54,26 +54,15 @@ auto_trader = AutoTrader(
 @app.on_event("startup")
 def startup_event() -> None:
     try:
-        prefetch_env = os.environ.get("PREFETCH_ON_STARTUP", "false").lower()
-        if prefetch_env in ("1", "true", "yes"):
-            market_data_service.start_prefetch_scheduler(interval_seconds=300)
-        else:
-            logging.getLogger(__name__).info(
-                "Prefetch scheduler not started (PREFETCH_ON_STARTUP=%s)", prefetch_env
-            )
+        market_data_service.start_prefetch_scheduler(interval_seconds=300)
     except Exception as exc:
         logging.getLogger(__name__).warning("Failed to start prefetch scheduler: %s", exc)
 
-    # Auto-trader automatisch starten als AUTO_TRADE=true
+    # Auto-trader altijd starten — werkt zonder Groq via technische fallback
     try:
-        auto_trade_env = os.environ.get("AUTO_TRADE", "false").lower()
-        if auto_trade_env in ("1", "true", "yes"):
-            interval = int(os.environ.get("AUTO_TRADE_INTERVAL", "10"))
-            auto_trader.start(interval_minutes=interval)
-        else:
-            logging.getLogger(__name__).info(
-                "Auto-trader niet gestart (AUTO_TRADE=%s)", auto_trade_env
-            )
+        interval = int(os.environ.get("AUTO_TRADE_INTERVAL", "5"))
+        auto_trader.start(interval_minutes=interval)
+        logging.getLogger(__name__).info("Auto-trader gestart met interval=%dm.", interval)
     except Exception as exc:
         logging.getLogger(__name__).warning("Failed to start auto-trader: %s", exc)
 
@@ -93,17 +82,68 @@ def auto_trader_status() -> Dict[str, Any]:
     return auto_trader.get_status()
 
 
+@app.get("/auto-trader/summary")
+def auto_trader_summary() -> Dict[str, Any]:
+    """Gecombineerde samenvatting: status + recente trades + open posities met P/L."""
+    status = auto_trader.get_status()
+
+    # Recente trades (laatste 30, nieuwste eerst)
+    history = data_service.get_trade_history()
+    recent_trades = [
+        {
+            "id": t.id,
+            "symbol": t.symbol,
+            "action": t.action,
+            "amount": t.amount,
+            "quantity": t.quantity,
+            "price": t.price,
+            "profit_loss": t.profit_loss,
+            "timestamp": t.timestamp,
+            "status": t.status,
+        }
+        for t in reversed(history[-30:])
+    ]
+
+    # Open posities met live P/L
+    holdings = data_service.get_holdings()
+    open_positions: List[Dict[str, Any]] = []
+    for h in holdings:
+        try:
+            instrument = market_data_service.get_instrument(str(h["symbol"]), str(h["market"]))
+            price = float(market_data_service.get_snapshot(instrument)["price"])
+        except Exception:
+            price = float(h["avg_entry_price"])
+        quantity = float(h["quantity"])
+        invested = float(h["invested_amount"])
+        value = price * quantity
+        pnl = value - invested
+        pnl_pct = (pnl / invested * 100) if invested > 0 else 0.0
+        open_positions.append({
+            "symbol": h["symbol"],
+            "market": h["market"],
+            "quantity": round(quantity, 6),
+            "avg_entry_price": round(float(h["avg_entry_price"]), 4),
+            "current_price": round(price, 4),
+            "invested_amount": round(invested, 2),
+            "current_value": round(value, 2),
+            "unrealized_pnl": round(pnl, 2),
+            "unrealized_pnl_pct": round(pnl_pct, 2),
+        })
+
+    status["recent_trades"] = recent_trades
+    status["open_positions"] = open_positions
+    return status
+
+
 @app.post("/auto-trader/start", dependencies=[Depends(verify_token)])
 def auto_trader_start(payload: Dict[str, Any] | None = None) -> Dict[str, Any]:
-    """Start de autonome trading-bot. Body: {"interval_minutes": 10}"""
-    interval = 10
+    """Start de autonome trading-bot. Body: {\"interval_minutes\": 5}"""
+    interval = 5
     if payload and "interval_minutes" in payload:
         interval = int(payload["interval_minutes"])
     started = auto_trader.start(interval_minutes=interval)
     if not started:
-        if auto_trader.is_running():
-            raise HTTPException(status_code=409, detail="Auto-trader draait al.")
-        raise HTTPException(status_code=503, detail="GROQ_API_KEY ontbreekt; auto-trader kan niet starten.")
+        raise HTTPException(status_code=409, detail="Auto-trader draait al.")
     return auto_trader.get_status()
 
 
