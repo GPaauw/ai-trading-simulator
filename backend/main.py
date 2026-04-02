@@ -310,20 +310,6 @@ def analyze_custom_symbols(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
     return ai_analysis_service.analyze_signals(signal_dicts, trade_history=trade_history)
 
 
-@app.post("/trade", dependencies=[Depends(verify_token)], response_model=TradeResult)
-def trade_endpoint(trade_request: TradeRequest) -> TradeResult:
-    if trade_request.action == "hold":
-        raise HTTPException(status_code=400, detail="Hold-signalen kunnen niet als trade worden uitgevoerd")
-    signal_map = advice_engine.build_signal_map()
-    return run_trade(
-        trade_request,
-        LIMITS,
-        data_service,
-        market_data_service,
-        signal_map.get(trade_request.symbol.upper()),
-    )
-
-
 @app.get("/history", dependencies=[Depends(verify_token)], response_model=List[TradeResult])
 def get_history() -> List[TradeResult]:
     return data_service.get_trade_history()
