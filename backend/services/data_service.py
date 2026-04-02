@@ -1,6 +1,8 @@
 import json
+import logging
 import os
 import sqlite3
+import time
 from datetime import date, datetime, timezone
 from typing import Any, Dict, List
 
@@ -30,11 +32,27 @@ class _PgCursor:
 class _PgConn:
     """Maakt psycopg2-verbinding compatibel met sqlite3 conn.execute()-interface."""
 
-    def __init__(self, dsn: str) -> None:
+    def __init__(self, dsn: str, retries: int = 3, backoff: float = 2.0) -> None:
         import psycopg2  # noqa: PLC0415
         import psycopg2.extras  # noqa: PLC0415
 
-        self._conn = psycopg2.connect(dsn, cursor_factory=psycopg2.extras.RealDictCursor)
+        last_err: Exception | None = None
+        for attempt in range(1, retries + 1):
+            try:
+                self._conn = psycopg2.connect(
+                    dsn,
+                    cursor_factory=psycopg2.extras.RealDictCursor,
+                    connect_timeout=10,
+                )
+                return
+            except psycopg2.OperationalError as exc:
+                last_err = exc
+                logging.getLogger(__name__).warning(
+                    "PostgreSQL connect poging %d/%d mislukt: %s", attempt, retries, exc,
+                )
+                if attempt < retries:
+                    time.sleep(backoff * attempt)
+        raise last_err  # type: ignore[misc]
 
     def execute(self, sql: str, params: tuple = ()) -> _PgCursor:
         # Vervang SQLite '?' placeholders door PostgreSQL '%s'
@@ -69,6 +87,7 @@ class DataService:
         if db_dir:
             os.makedirs(db_dir, exist_ok=True)
         self._configured_start_balance = float(os.getenv("START_BALANCE", "2000"))
+        self._pg_unavailable = False
         self._init_db()
 
     def get_trade_history(self) -> List[TradeResult]:
@@ -450,8 +469,14 @@ class DataService:
             conn.commit()
 
     def _connect(self) -> Any:
-        if _DATABASE_URL:
-            return _PgConn(_DATABASE_URL)
+        if _DATABASE_URL and not self._pg_unavailable:
+            try:
+                return _PgConn(_DATABASE_URL)
+            except Exception as exc:
+                logging.getLogger(__name__).error(
+                    "PostgreSQL niet bereikbaar, val terug op SQLite: %s", exc,
+                )
+                self._pg_unavailable = True
         conn = sqlite3.connect(self._db_path)
         conn.row_factory = sqlite3.Row
         return conn
