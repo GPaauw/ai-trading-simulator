@@ -72,13 +72,6 @@ class _DashboardPageState extends State<DashboardPage>
     return Colors.white70;
   }
 
-  String _formatTimestamp(dynamic ts) {
-    if (ts == null) return '-';
-    final s = ts.toString();
-    if (s.length >= 16) return '${s.substring(0, 10)} ${s.substring(11, 16)}';
-    return s;
-  }
-
   // ── Build ────────────────────────────────────────────────────────────────
 
   @override
@@ -155,13 +148,24 @@ class _DashboardPageState extends State<DashboardPage>
     final running = s['running'] == true;
     final cycles = s['cycles_completed'] ?? 0;
     final interval = s['interval_minutes'] ?? '-';
-    final lastCycle = _formatTimestamp(s['last_cycle_time']);
-    final totalBuys = s['total_buys'] ?? 0;
-    final totalSells = s['total_sells'] ?? 0;
-    final realizedPl = s['realized_profit_loss'] ?? 0;
+    final lastCycle = s['last_cycle_time'] ?? '-';
+    final serverTime = s['server_time'] ?? '-';
     final positions = (s['open_positions'] as List?)?.length ?? 0;
     final trades = (s['trade_history'] as List?)?.length ?? 0;
     final lastError = s['last_error'];
+
+    // Portfolio
+    final startBalance = s['start_balance'] ?? 0;
+    final availableCash = s['available_cash'] ?? 0;
+    final totalInvested = s['total_invested'] ?? 0;
+    final totalMarketValue = s['total_market_value'] ?? 0;
+    final totalEquity = s['total_equity'] ?? 0;
+    final totalPnl = s['total_pnl'] ?? 0;
+    final totalPnlPct = s['total_pnl_pct'] ?? 0;
+    final unrealizedPnl = s['unrealized_pnl'] ?? 0;
+    final realizedPnl = s['realized_pnl'] ?? 0;
+    final totalBuys = s['total_buys'] ?? 0;
+    final totalSells = s['total_sells'] ?? 0;
 
     return RefreshIndicator(
       onRefresh: _fetchSummary,
@@ -172,16 +176,55 @@ class _DashboardPageState extends State<DashboardPage>
             icon: running ? Icons.play_circle : Icons.pause_circle,
             iconColor: running ? Colors.green : Colors.orange,
             title: running ? 'Actief' : 'Gestopt',
-            subtitle: 'Interval: $interval min',
+            subtitle: 'Interval: $interval min  •  $serverTime (Amsterdam)',
           ),
           const SizedBox(height: 12),
+
+          // Portfolio overzicht
           Card(
             child: Padding(
               padding: const EdgeInsets.all(16),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text('Overzicht', style: Theme.of(context).textTheme.titleMedium),
+                  Text('Portfolio', style: Theme.of(context).textTheme.titleMedium),
+                  const Divider(),
+                  _infoRow('Startkapitaal', '€ ${_fmt(startBalance)}'),
+                  _infoRow('Beschikbaar cash', '€ ${_fmt(availableCash)}'),
+                  _infoRow('Geïnvesteerd', '€ ${_fmt(totalInvested)}'),
+                  _infoRow('Marktwaarde posities', '€ ${_fmt(totalMarketValue)}'),
+                  const Divider(),
+                  _infoRow('Totaal vermogen', '€ ${_fmt(totalEquity)}',
+                      valueColor: Colors.white),
+                  _infoRow(
+                    'Totale winst / verlies',
+                    '€ ${_fmt(totalPnl)} (${_fmt(totalPnlPct)}%)',
+                    valueColor: _plColor(totalPnl),
+                  ),
+                  _infoRow(
+                    'Ongerealiseerde P/L',
+                    '€ ${_fmt(unrealizedPnl)}',
+                    valueColor: _plColor(unrealizedPnl),
+                  ),
+                  _infoRow(
+                    'Gerealiseerde P/L',
+                    '€ ${_fmt(realizedPnl)}',
+                    valueColor: _plColor(realizedPnl),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+
+          // Trading activiteit
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('Trading activiteit', style: Theme.of(context).textTheme.titleMedium),
                   const Divider(),
                   _infoRow('Cycli voltooid', '$cycles'),
                   _infoRow('Laatste cyclus', lastCycle),
@@ -189,12 +232,6 @@ class _DashboardPageState extends State<DashboardPage>
                   _infoRow('Totaal sells', '$totalSells'),
                   _infoRow('Open posities', '$positions'),
                   _infoRow('Totaal trades', '$trades'),
-                  const Divider(),
-                  _infoRow(
-                    'Gerealiseerde P/L',
-                    '\$ ${_fmt(realizedPl)}',
-                    valueColor: _plColor(realizedPl),
-                  ),
                 ],
               ),
             ),
@@ -311,13 +348,13 @@ class _DashboardPageState extends State<DashboardPage>
                   ),
                   const SizedBox(height: 8),
                   _infoRow('Aantal', _fmt(p['quantity'], decimals: 4)),
-                  _infoRow('Aankoopprijs', '\$ ${_fmt(p['avg_entry_price'], decimals: 4)}'),
-                  _infoRow('Huidige prijs', '\$ ${_fmt(p['current_price'], decimals: 4)}'),
-                  _infoRow('Geïnvesteerd', '\$ ${_fmt(p['invested_amount'])}'),
-                  _infoRow('Huidige waarde', '\$ ${_fmt(p['current_value'])}'),
+                  _infoRow('Aankoopprijs', '€ ${_fmt(p['avg_entry_price'], decimals: 4)}'),
+                  _infoRow('Huidige prijs', '€ ${_fmt(p['current_price'], decimals: 4)}'),
+                  _infoRow('Geïnvesteerd', '€ ${_fmt(p['invested_amount'])}'),
+                  _infoRow('Huidige waarde', '€ ${_fmt(p['current_value'])}'),
                   _infoRow(
                     'Ongerealiseerde P/L',
-                    '\$ ${_fmt(pnl)}',
+                    '€ ${_fmt(pnl)}',
                     valueColor: _plColor(pnl),
                   ),
                 ],
@@ -371,12 +408,12 @@ class _DashboardPageState extends State<DashboardPage>
                 style: const TextStyle(fontWeight: FontWeight.w600),
               ),
               subtitle: Text(
-                '${_formatTimestamp(t['timestamp'])}  •  \$ ${_fmt(t['price'], decimals: 4)}  •  ${_fmt(t['quantity'], decimals: 4)} stuks',
+                '${t['timestamp'] ?? '-'}  •  € ${_fmt(t['price'], decimals: 4)}  •  ${_fmt(t['quantity'], decimals: 4)} stuks',
                 style: const TextStyle(fontSize: 12),
               ),
               trailing: pl != null && pl != 0
                   ? Text(
-                      '\$ ${_fmt(pl)}',
+                      '€ ${_fmt(pl)}',
                       style: TextStyle(
                         fontWeight: FontWeight.bold,
                         color: _plColor(pl),

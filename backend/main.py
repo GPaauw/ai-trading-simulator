@@ -1,6 +1,8 @@
 from typing import Any, Dict, List
 import logging
 import os
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -85,15 +87,41 @@ def health() -> Dict[str, str]:
 # AUTO-TRADER ENDPOINTS
 # ══════════════════════════════════════════════════════════════════════
 
+def _to_amsterdam(iso_str: str | None) -> str:
+    """Converteer een ISO-timestamp naar Amsterdam-tijd (dd-MM-yyyy HH:mm)."""
+    if not iso_str:
+        return "-"
+    try:
+        dt = datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
+        return dt.astimezone(ZoneInfo("Europe/Amsterdam")).strftime("%d-%m-%Y %H:%M")
+    except Exception:
+        return iso_str
+
+
 @app.get("/auto-trader/summary", dependencies=[Depends(verify_token)])
 def auto_trader_summary() -> Dict[str, Any]:
-    """Gecombineerde samenvatting: status + alle trades + open posities met P/L."""
+    """Gecombineerde samenvatting: status + alle trades + open posities met live P/L."""
     status = auto_trader.get_status()
+
+    # Amsterdam-tijd voor status-timestamps
+    ams_now = datetime.now(ZoneInfo("Europe/Amsterdam")).strftime("%d-%m-%Y %H:%M:%S")
+    status["server_time"] = ams_now
+    status["started_at"] = _to_amsterdam(status.get("started_at"))
+    status["last_cycle_time"] = _to_amsterdam(status.get("last_cycle_time"))
 
     # Alle trades (nieuwste eerst)
     history = data_service.get_trade_history()
-    all_trades = [
-        {
+    total_buys = 0
+    total_sells = 0
+    realized_pl = 0.0
+    all_trades: List[Dict[str, Any]] = []
+    for t in reversed(history):
+        if t.action == "buy":
+            total_buys += 1
+        elif t.action == "sell":
+            total_sells += 1
+            realized_pl += t.profit_loss
+        all_trades.append({
             "id": t.id,
             "symbol": t.symbol,
             "action": t.action,
@@ -101,15 +129,16 @@ def auto_trader_summary() -> Dict[str, Any]:
             "quantity": t.quantity,
             "price": t.price,
             "profit_loss": t.profit_loss,
-            "timestamp": t.timestamp,
+            "timestamp": _to_amsterdam(t.timestamp),
             "status": t.status,
-        }
-        for t in reversed(history)
-    ]
+        })
 
     # Open posities met live P/L
     holdings = data_service.get_holdings()
     open_positions: List[Dict[str, Any]] = []
+    total_invested = 0.0
+    total_market_value = 0.0
+    total_unrealized_pnl = 0.0
     for h in holdings:
         try:
             instrument = market_data_service.get_instrument(str(h["symbol"]), str(h["market"]))
@@ -121,6 +150,9 @@ def auto_trader_summary() -> Dict[str, Any]:
         value = price * quantity
         pnl = value - invested
         pnl_pct = (pnl / invested * 100) if invested > 0 else 0.0
+        total_invested += invested
+        total_market_value += value
+        total_unrealized_pnl += pnl
         open_positions.append({
             "symbol": h["symbol"],
             "market": h["market"],
@@ -131,8 +163,28 @@ def auto_trader_summary() -> Dict[str, Any]:
             "current_value": round(value, 2),
             "unrealized_pnl": round(pnl, 2),
             "unrealized_pnl_pct": round(pnl_pct, 2),
+            "opened_at": _to_amsterdam(h.get("opened_at")),
         })
 
+    # Portfolio-samenvatting
+    cash = data_service.get_cash_balance()
+    start_balance = float(data_service._get_setting("start_balance", "2000"))
+    total_equity = cash + total_market_value
+    total_pnl = total_equity - start_balance
+    total_pnl_pct = (total_pnl / start_balance * 100) if start_balance > 0 else 0.0
+
+    status["currency"] = "EUR"
+    status["start_balance"] = round(start_balance, 2)
+    status["available_cash"] = round(cash, 2)
+    status["total_invested"] = round(total_invested, 2)
+    status["total_market_value"] = round(total_market_value, 2)
+    status["total_equity"] = round(total_equity, 2)
+    status["total_pnl"] = round(total_pnl, 2)
+    status["total_pnl_pct"] = round(total_pnl_pct, 2)
+    status["unrealized_pnl"] = round(total_unrealized_pnl, 2)
+    status["realized_pnl"] = round(realized_pl, 2)
+    status["total_buys"] = total_buys
+    status["total_sells"] = total_sells
     status["trade_history"] = all_trades
     status["open_positions"] = open_positions
     return status
