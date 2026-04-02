@@ -118,19 +118,6 @@ class _LoginPageState extends State<LoginPage> {
                       onPressed: _isLogging ? null : _login,
                     ),
                   ),
-                  const SizedBox(height: 12),
-                  SizedBox(
-                    width: double.infinity,
-                    child: OutlinedButton(
-                      child: const Text('Continueer als gast'),
-                      onPressed: () {
-                        Navigator.pushReplacement(
-                          context,
-                          MaterialPageRoute(builder: (_) => const DashboardPage()),
-                        );
-                      },
-                    ),
-                  ),
                 ],
               ),
             ),

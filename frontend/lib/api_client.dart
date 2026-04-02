@@ -2,18 +2,12 @@ import 'dart:convert';
 
 import 'package:http/http.dart' as http;
 
-import 'models/holding.dart';
-import 'models/signal.dart';
-import 'models/trade.dart';
-
 // ── Lokale fallback voor development, overschrijf in productie via
 // flutter build --dart-define=BACKEND_URL=https://jouw-backend-url
 const String kBackendUrl = String.fromEnvironment(
   'BACKEND_URL',
   defaultValue: 'https://ai-trading-simulator.onrender.com',
 );
-// Voor lokale testing kun je tijdelijk hier de token invullen nadat je /login
-// hebt aangeroepen. In productie: bewaar tokens in veilige opslag.
 String? _token;
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -32,161 +26,6 @@ class ApiClient {
 
   static bool isLoggedIn() => _token != null;
 
-  static Future<List<Signal>> getSignals() async {
-    final response = await http.get(Uri.parse('$kBackendUrl/advice'), headers: _headers());
-    if (response.statusCode != 200) {
-      throw Exception('Fout bij ophalen signalen (${response.statusCode})');
-    }
-    final List<dynamic> data = jsonDecode(response.body) as List<dynamic>;
-    return data
-        .map((e) {
-          final json = e as Map<String, dynamic>;
-          // Zorg dat id altijd aanwezig is (AI response kan dict zijn zonder id)
-          json['id'] ??= json['symbol'] ?? '';
-          return Signal.fromJson(json);
-        })
-        .toList();
-  }
-
-  static Future<List<Holding>> getSellAdvice() async {
-    final response = await http.get(Uri.parse('$kBackendUrl/sell-advice'), headers: _headers());
-    if (response.statusCode != 200) {
-      throw Exception('Fout bij ophalen verkoopadvies (${response.statusCode})');
-    }
-    final List<dynamic> data = jsonDecode(response.body) as List<dynamic>;
-    return data
-        .map((e) => Holding.fromJson(e as Map<String, dynamic>))
-        .toList();
-  }
-
-  static Future<Trade> executeTrade(
-    String symbol,
-    String action,
-    double amount, {
-    String? market,
-    double? quantity,
-    double? price,
-    double expectedReturnPct = 0.0,
-    double riskPct = 0.0,
-  }) async {
-    final response = await http.post(
-      Uri.parse('$kBackendUrl/trade'),
-      headers: _headers(),
-      body: jsonEncode({
-        'symbol': symbol,
-        'action': action,
-        'amount': amount,
-        'market': market,
-        'quantity': quantity,
-        'price': price,
-        'expected_return_pct': expectedReturnPct,
-        'risk_pct': riskPct,
-      }),
-    );
-    if (response.statusCode != 200) {
-      throw Exception('Fout bij uitvoeren trade (${response.statusCode})');
-    }
-    return Trade.fromJson(jsonDecode(response.body) as Map<String, dynamic>);
-  }
-
-  static Future<List<Trade>> getHistory() async {
-    final response = await http.get(Uri.parse('$kBackendUrl/history'), headers: _headers());
-    if (response.statusCode != 200) {
-      throw Exception('Fout bij ophalen geschiedenis (${response.statusCode})');
-    }
-    final List<dynamic> data = jsonDecode(response.body) as List<dynamic>;
-    return data
-        .map((e) => Trade.fromJson(e as Map<String, dynamic>))
-        .toList();
-  }
-
-  static Future<Map<String, dynamic>> learn() async {
-    final response = await http.post(Uri.parse('$kBackendUrl/learn'), headers: _headers());
-    if (response.statusCode != 200) {
-      throw Exception('Fout bij leren (${response.statusCode})');
-    }
-    return jsonDecode(response.body) as Map<String, dynamic>;
-  }
-
-  static Future<Map<String, dynamic>> getPortfolio() async {
-    final response = await http.get(Uri.parse('$kBackendUrl/portfolio'), headers: _headers());
-    if (response.statusCode != 200) {
-      throw Exception('Fout bij ophalen portfolio (${response.statusCode})');
-    }
-    return jsonDecode(response.body) as Map<String, dynamic>;
-  }
-
-  static Future<List<Holding>> getHoldings() async {
-    final response = await http.get(Uri.parse('$kBackendUrl/holdings'), headers: _headers());
-    if (response.statusCode != 200) {
-      throw Exception('Fout bij ophalen holdings (${response.statusCode})');
-    }
-    final List<dynamic> data = jsonDecode(response.body) as List<dynamic>;
-    return data
-        .map((e) => Holding.fromJson(e as Map<String, dynamic>))
-        .toList();
-  }
-
-  static Future<Map<String, dynamic>> sendRealtimeAlerts() async {
-    final response = await http.post(Uri.parse('$kBackendUrl/alerts/realtime'), headers: _headers());
-    if (response.statusCode != 200) {
-      throw Exception(_extractDetail(response.body, 'Fout bij versturen realtime alerts (${response.statusCode})'));
-    }
-    return jsonDecode(response.body) as Map<String, dynamic>;
-  }
-
-  static Future<Map<String, dynamic>> sendDailySummary() async {
-    final response = await http.post(Uri.parse('$kBackendUrl/alerts/summary'), headers: _headers());
-    if (response.statusCode != 200) {
-      throw Exception(_extractDetail(response.body, 'Fout bij versturen dag samenvatting (${response.statusCode})'));
-    }
-    return jsonDecode(response.body) as Map<String, dynamic>;
-  }
-
-  static Future<Map<String, dynamic>> sellAll() async {
-    final response = await http.post(Uri.parse('$kBackendUrl/sell-all'), headers: _headers());
-    if (response.statusCode != 200) {
-      throw Exception(_extractDetail(response.body, 'Fout bij verkopen alle posities (${response.statusCode})'));
-    }
-    return jsonDecode(response.body) as Map<String, dynamic>;
-  }
-
-  static Future<List<Signal>> getLongtermSignals() async {
-    final response = await http.get(Uri.parse('$kBackendUrl/signals/longterm'), headers: _headers());
-    if (response.statusCode != 200) {
-      throw Exception('Fout bij ophalen langetermijn signalen (${response.statusCode})');
-    }
-    final List<dynamic> data = jsonDecode(response.body) as List<dynamic>;
-    return data.map((e) => Signal.fromJson(e as Map<String, dynamic>)).toList();
-  }
-
-  static Future<List<Signal>> getPremarketSignals() async {
-    final response = await http.get(Uri.parse('$kBackendUrl/signals/premarket'), headers: _headers());
-    if (response.statusCode != 200) {
-      throw Exception('Fout bij ophalen pre-market signalen (${response.statusCode})');
-    }
-    final List<dynamic> data = jsonDecode(response.body) as List<dynamic>;
-    return data.map((e) => Signal.fromJson(e as Map<String, dynamic>)).toList();
-  }
-
-  static Future<List<Map<String, dynamic>>> getAiSignals() async {
-    final response = await http.get(Uri.parse('$kBackendUrl/signals/ai'), headers: _headers());
-    if (response.statusCode != 200) {
-      throw Exception('Fout bij ophalen AI-signalen (${response.statusCode})');
-    }
-    final List<dynamic> data = jsonDecode(response.body) as List<dynamic>;
-    return data.map((e) => e as Map<String, dynamic>).toList();
-  }
-
-  static String _extractDetail(String body, String fallback) {
-    try {
-      final map = jsonDecode(body) as Map<String, dynamic>;
-      final detail = map['detail'];
-      if (detail is String && detail.isNotEmpty) return detail;
-    } catch (_) {}
-    return fallback;
-  }
-
   static Future<String> login(String username, String password) async {
     final response = await http.post(
       Uri.parse('$kBackendUrl/login'),
@@ -202,44 +41,6 @@ class ApiClient {
     return token;
   }
 
-  static Future<Map<String, dynamic>> getPrefetchStatus() async {
-    final response = await http.get(
-      Uri.parse('$kBackendUrl/prefetch/status'),
-      headers: _headers(),
-    );
-    if (response.statusCode != 200) {
-      throw Exception('Fout bij ophalen laadstatus (${response.statusCode})');
-    }
-    return jsonDecode(response.body) as Map<String, dynamic>;
-  }
-
-  static Future<List<Map<String, dynamic>>> searchSymbols(String query) async {
-    final response = await http.get(
-      Uri.parse('$kBackendUrl/search?q=${Uri.encodeQueryComponent(query)}'),
-      headers: _headers(),
-    );
-    if (response.statusCode != 200) {
-      throw Exception('Fout bij zoeken (${response.statusCode})');
-    }
-    final List<dynamic> data = jsonDecode(response.body) as List<dynamic>;
-    return data.map((e) => e as Map<String, dynamic>).toList();
-  }
-
-  static Future<List<Map<String, dynamic>>> analyzeCustomSymbols(
-    List<Map<String, dynamic>> symbols,
-  ) async {
-    final response = await http.post(
-      Uri.parse('$kBackendUrl/analyze-custom'),
-      headers: _headers(),
-      body: jsonEncode({'symbols': symbols}),
-    );
-    if (response.statusCode != 200) {
-      throw Exception('Fout bij AI-analyse (${response.statusCode})');
-    }
-    final List<dynamic> data = jsonDecode(response.body) as List<dynamic>;
-    return data.map((e) => e as Map<String, dynamic>).toList();
-  }
-
   static Future<Map<String, dynamic>> getAutoTraderSummary() async {
     final response = await http.get(
       Uri.parse('$kBackendUrl/auto-trader/summary'),
@@ -247,29 +48,6 @@ class ApiClient {
     );
     if (response.statusCode != 200) {
       throw Exception('Fout bij ophalen auto-trader samenvatting (${response.statusCode})');
-    }
-    return jsonDecode(response.body) as Map<String, dynamic>;
-  }
-
-  static Future<Map<String, dynamic>> startAutoTrader({int intervalMinutes = 5}) async {
-    final response = await http.post(
-      Uri.parse('$kBackendUrl/auto-trader/start'),
-      headers: _headers(),
-      body: jsonEncode({'interval_minutes': intervalMinutes}),
-    );
-    if (response.statusCode != 200) {
-      throw Exception(_extractDetail(response.body, 'Fout bij starten auto-trader (${response.statusCode})'));
-    }
-    return jsonDecode(response.body) as Map<String, dynamic>;
-  }
-
-  static Future<Map<String, dynamic>> stopAutoTrader() async {
-    final response = await http.post(
-      Uri.parse('$kBackendUrl/auto-trader/stop'),
-      headers: _headers(),
-    );
-    if (response.statusCode != 200) {
-      throw Exception(_extractDetail(response.body, 'Fout bij stoppen auto-trader (${response.statusCode})'));
     }
     return jsonDecode(response.body) as Map<String, dynamic>;
   }
