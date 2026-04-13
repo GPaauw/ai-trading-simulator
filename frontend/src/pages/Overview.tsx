@@ -11,13 +11,15 @@ interface Summary {
   start_balance: number
   num_holdings: number
   day_pnl: number
+  unrealized_pnl?: number
 }
 
 interface StatusInfo {
   auto_trader_running: boolean
   model_loaded: boolean
   instruments_count: number
-  uptime_seconds: number
+  cycles_completed?: number
+  last_error?: string | null
 }
 
 function formatEur(n: number) {
@@ -89,7 +91,7 @@ export default function Overview() {
           ML Model {status?.model_loaded ? 'geladen' : 'niet geladen (fallback)'}
         </span>
         <span className="text-dark-500">
-          {status?.instruments_count} instrumenten
+          {status?.instruments_count ?? 0} instrumenten &middot; {status?.cycles_completed ?? 0} cycli
         </span>
       </div>
 

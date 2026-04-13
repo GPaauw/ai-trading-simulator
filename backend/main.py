@@ -135,6 +135,10 @@ def get_status() -> Dict[str, Any]:
     status["server_time"] = ams_now
     status["started_at"] = _to_amsterdam(status.get("started_at"))
     status["last_cycle_time"] = _to_amsterdam(status.get("last_cycle_time"))
+    # Alias fields for frontend compatibility
+    status["auto_trader_running"] = status.get("running", False)
+    status["model_loaded"] = status.get("ml_signal_model", False)
+    status["instruments_count"] = len(market_data_service.get_watchlist()) if hasattr(market_data_service, 'get_watchlist') else 0
     return status
 
 
@@ -171,9 +175,13 @@ def portfolio_summary() -> Dict[str, Any]:
 
         positions.append({
             "symbol": h["symbol"], "market": h["market"],
-            "quantity": round(qty, 6), "avg_entry_price": round(float(h["avg_entry_price"]), 4),
-            "current_price": round(price, 4), "invested_amount": round(invested, 2),
+            "quantity": round(qty, 6),
+            "avg_entry_price": round(float(h["avg_entry_price"]), 4),
+            "avg_price": round(float(h["avg_entry_price"]), 4),
+            "current_price": round(price, 4),
+            "invested_amount": round(invested, 2),
             "current_value": round(value, 2),
+            "market_value": round(value, 2),
             "unrealized_pnl": round(pnl, 2), "unrealized_pnl_pct": round(pnl_pct, 2),
             "opened_at": _to_amsterdam(h.get("opened_at")),
         })
@@ -192,13 +200,17 @@ def portfolio_summary() -> Dict[str, Any]:
         "currency": "EUR",
         "start_balance": round(start_balance, 2),
         "available_cash": round(cash, 2),
+        "cash": round(cash, 2),
         "total_invested": round(total_invested, 2),
         "total_market_value": round(total_market_value, 2),
+        "holdings_value": round(total_market_value, 2),
         "total_equity": round(total_equity, 2),
         "total_pnl": round(total_pnl, 2),
         "total_pnl_pct": round(total_pnl_pct, 2),
         "unrealized_pnl": round(total_unrealized_pnl, 2),
         "realized_pnl": round(realized_pl, 2),
+        "day_pnl": round(total_unrealized_pnl, 2),
+        "num_holdings": len(positions),
         "total_buys": total_buys,
         "total_sells": total_sells,
         "open_positions": positions,
@@ -223,7 +235,7 @@ class AmountRequest(BaseModel):
 def portfolio_deposit(req: AmountRequest) -> Dict[str, Any]:
     try:
         new_balance = data_service.deposit(req.amount)
-        return {"status": "ok", "new_cash_balance": round(new_balance, 2)}
+        return {"status": "ok", "message": f"€{req.amount:.2f} gestort", "new_balance": round(new_balance, 2), "new_cash_balance": round(new_balance, 2)}
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
@@ -232,7 +244,7 @@ def portfolio_deposit(req: AmountRequest) -> Dict[str, Any]:
 def portfolio_withdraw(req: AmountRequest) -> Dict[str, Any]:
     try:
         new_balance = data_service.withdraw(req.amount)
-        return {"status": "ok", "new_cash_balance": round(new_balance, 2)}
+        return {"status": "ok", "message": f"€{req.amount:.2f} opgenomen", "new_balance": round(new_balance, 2), "new_cash_balance": round(new_balance, 2)}
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
@@ -246,9 +258,9 @@ def trades_history() -> List[Dict[str, Any]]:
     history = data_service.get_trade_history()
     return [
         {
-            "id": t.id, "symbol": t.symbol, "action": t.action,
-            "amount": t.amount, "quantity": t.quantity, "price": t.price,
-            "profit_loss": t.profit_loss, "timestamp": _to_amsterdam(t.timestamp),
+            "id": t.id, "symbol": t.symbol, "action": t.action, "side": t.action,
+            "amount": t.amount, "total": t.amount, "quantity": t.quantity, "price": t.price,
+            "profit_loss": t.profit_loss, "pnl": t.profit_loss, "timestamp": _to_amsterdam(t.timestamp),
             "status": t.status, "confidence": t.confidence, "model_version": t.model_version,
         }
         for t in reversed(history)

@@ -269,7 +269,7 @@ class DataService:
     def get_portfolio_history(self) -> List[Dict[str, Any]]:
         with self._connect() as conn:
             rows = conn.execute("SELECT date, balance FROM portfolio_history ORDER BY date ASC").fetchall()
-        return [{"date": row["date"], "balance": round(float(row["balance"]), 2)} for row in rows]
+        return [{"date": row["date"], "equity": round(float(row["balance"]), 2)} for row in rows]
 
     def record_portfolio_snapshot(self, balance: float) -> None:
         today = date.today().isoformat()
