@@ -53,6 +53,6 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add backend/ml/models/
+          git add -f backend/ml/models/
           git diff --cached --quiet || git commit -m "chore: update ML models [skip ci]"
           git push
