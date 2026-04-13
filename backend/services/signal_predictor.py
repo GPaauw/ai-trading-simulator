@@ -61,13 +61,11 @@ class SignalPredictor:
         if not self._model_loaded or self._classifier is None:
             return {}
         try:
-            importance = self._classifier.feature_importance(importance_type="gain")
-            total = sum(importance)
-            if total == 0:
-                return {}
+            importance = self._classifier.feature_importances_
+            total = max(float(sum(importance)), 1e-9)
             return {
                 FEATURE_COLUMNS[i]: round(float(importance[i]) / total, 4)
-                for i in range(len(FEATURE_COLUMNS))
+                for i in range(min(len(FEATURE_COLUMNS), len(importance)))
             }
         except Exception:
             return {}
@@ -78,11 +76,11 @@ class SignalPredictor:
         """Voorspel met geladen LightGBM modellen."""
         results = []
 
-        # Zorg voor juiste kolommen
-        X = features_df[FEATURE_COLUMNS].values
+        # Zorg voor juiste kolommen en vul ontbrekende aan met 0
+        X = features_df.reindex(columns=FEATURE_COLUMNS).fillna(0)
 
         # Classificatie: multi-class probabilities
-        probas = self._classifier.predict(X)  # shape: (n_samples, n_classes)
+        probas = self._classifier.predict_proba(X)  # shape: (n_samples, n_classes)
 
         # Regressie: verwachte return
         if self._regressor is not None:
