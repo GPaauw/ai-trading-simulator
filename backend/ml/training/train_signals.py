@@ -239,10 +239,10 @@ def main():
     joblib.dump(regressor, RETURN_MODEL_PATH)
     logger.info("Regressor opgeslagen: %s", RETURN_MODEL_PATH)
 
-    # Feature importance rapport
-    importance = classifier.feature_importance(importance_type="gain")
-    total = sum(importance)
-    fi = {FEATURE_COLUMNS[i]: round(float(importance[i]) / total, 4) for i in range(len(FEATURE_COLUMNS))}
+    # Feature importance rapport (scikit-learn API: feature_importances_)
+    importance = classifier.feature_importances_
+    total = max(sum(importance), 1e-9)
+    fi = {FEATURE_COLUMNS[i]: round(float(importance[i]) / total, 4) for i in range(len(FEATURE_COLUMNS)) if i < len(importance)}
     fi_sorted = dict(sorted(fi.items(), key=lambda x: x[1], reverse=True))
     logger.info("Feature importance (top 10):")
     for feat, imp in list(fi_sorted.items())[:10]:
