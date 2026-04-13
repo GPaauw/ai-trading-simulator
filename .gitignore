@@ -1,4 +1,4 @@
-# ── Python (backend) ──────────────────────────────────────────────────────────
+# Python
 __pycache__/
 *.py[cod]
 *.pyo
@@ -9,24 +9,24 @@ __pycache__/
 env/
 venv/
 *.egg-info/
-dist/
-build/
 .pytest_cache/
 
-# ── Flutter (frontend) ────────────────────────────────────────────────────────
-frontend/.dart_tool/
-frontend/.packages
-frontend/.pub-cache/
-frontend/.flutter-plugins
-frontend/.flutter-plugins-dependencies
-frontend/build/
-frontend/pubspec.lock
+# ML Models (getraind via GitHub Actions)
+backend/ml/models/*.joblib
+backend/ml/models/*.zip
+backend/ml/models/*.json
 
-# ── IDE ───────────────────────────────────────────────────────────────────────
+# Node / React
+frontend/node_modules/
+frontend/dist/
+
+# Data
+backend/data/*.sqlite3
+
+# IDE
 .idea/
 .vscode/
 *.swp
 *.swo
 .DS_Store
 Thumbs.db
-*.sqlite3

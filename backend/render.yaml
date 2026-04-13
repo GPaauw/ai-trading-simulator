@@ -1,8 +1,6 @@
-# render.yaml — bewaar dit bestand in de ROOT van je repository
-# Render detecteert het automatisch bij het aanmaken van een nieuwe Web Service.
 services:
   - type: web
-    name: ai-trading-simulator-backend
+    name: ai-trading-bot
     runtime: python
     pythonVersion: 3.12.3
     rootDir: backend
@@ -10,26 +8,14 @@ services:
     startCommand: uvicorn main:app --host 0.0.0.0 --port 8000
     envVars:
       - key: APP_USERNAME
-        # Stel deze in via de Render dashboard of secret management
-        value: ""
+        sync: false
       - key: APP_PASSWORD
-        # Stel deze in via de Render dashboard of secret management
-        value: ""
-      - key: GEMINI_API_KEY
-        # Gemini API key uit Google AI Studio voor AI-analyse
         sync: false
-      - key: GEMINI_MODEL
-        # Snelle en goedkope Gemini-variant voor JSON-analyse
-        value: "gemini-2.0-flash"
-      - key: GROQ_API_KEY
-        # Groq API key voor autonome auto-trader (gratis via console.groq.com)
+      - key: DATABASE_URL
         sync: false
-      - key: GROQ_MODEL
-        # Llama 3.3 70B via Groq voor autonome trading-loop
-        value: "llama-3.3-70b-versatile"
-      - key: AUTO_TRADE
-        # Autonome trading-bot is altijd actief
-        value: "true"
+      - key: START_BALANCE
+        value: "5000"
       - key: AUTO_TRADE_INTERVAL
-        # Interval in minuten tussen trading-cycli
         value: "5"
+      - key: PREFETCH_BATCH_SIZE
+        value: "15"

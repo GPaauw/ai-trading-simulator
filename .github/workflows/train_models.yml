@@ -1,0 +1,49 @@
+name: Train ML Models
+
+on:
+  schedule:
+    - cron: '0 2 * * 0'  # Elke zondag om 02:00 UTC
+  workflow_dispatch:  # Handmatig triggeren
+
+jobs:
+  train:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          cd backend
+          pip install -r requirements.txt
+
+      - name: Train Signal Models (LightGBM)
+        run: |
+          cd backend
+          python -m ml.training.train_signals
+
+      - name: Train Portfolio Model (PPO RL)
+        run: |
+          cd backend
+          python -m ml.training.train_portfolio
+
+      - name: Run Backtest
+        run: |
+          cd backend
+          python -m ml.training.backtest
+
+      - name: Commit model artifacts
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add backend/ml/models/
+          git diff --cached --quiet || git commit -m "chore: update ML models [skip ci]"
+          git push

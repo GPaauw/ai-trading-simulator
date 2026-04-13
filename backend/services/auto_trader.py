@@ -1,25 +1,29 @@
-"""Autonome auto-trader: handelt hypothetisch om het AI-model te laten leren.
+"""Auto Trader: ML-gestuurde autonome trading loop.
 
-Start met €2000 virtueel kapitaal. Draait als achtergrondtaak elke INTERVAL
-minuten. Het AI-model (Groq/Llama 3.3 70B) beslist welke trades uitgevoerd worden.
-Na elke ronde evalueert het model zijn eigen resultaten en past strategie aan.
-
-De auto-trader gebruikt dezelfde DataService en MarketDataService als de rest
-van de app, zodat portfolio en trade-historie consistent zijn.
+Orchestreert de volledige pipeline per cyclus:
+1. Marktdata ophalen (MarketDataService)
+2. Features berekenen (FeatureEngine)
+3. Signalen voorspellen (SignalPredictor)
+4. Portfolio beslissingen (PortfolioManager)
+5. Trades uitvoeren (TradeEngine)
+6. Feature snapshots opslaan voor retraining
 """
 
+import json
 import logging
 import threading
 import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
+import pandas as pd
+
 from models.trade import TradeRequest
-from services.advice_engine import AdviceEngine
 from services.data_service import DataService
-from services.groq_client import GroqClient
-from services.learning_agent import LearningAgent
+from services.feature_engine import FeatureEngine
 from services.market_data_service import MarketDataService
+from services.portfolio_manager import PortfolioManager
+from services.signal_predictor import SignalPredictor
 from services.trade_engine import execute_trade
 
 logger = logging.getLogger(__name__)
@@ -30,42 +34,38 @@ _MAX_CYCLE_HISTORY = 50
 
 
 class AutoTrader:
-    """Autonome trading-loop die op de achtergrond draait."""
-
     def __init__(
         self,
         data_service: DataService,
         market_data_service: MarketDataService,
-        advice_engine: AdviceEngine,
-        learning_agent: LearningAgent,
+        feature_engine: FeatureEngine,
+        signal_predictor: SignalPredictor,
+        portfolio_manager: PortfolioManager,
         limits: Dict[str, Any],
     ) -> None:
         self._data = data_service
         self._market = market_data_service
-        self._advice = advice_engine
-        self._learning = learning_agent
+        self._features = feature_engine
+        self._predictor = signal_predictor
+        self._portfolio_mgr = portfolio_manager
         self._limits = limits
-        self._groq = GroqClient()
 
         self._running = False
         self._thread: Optional[threading.Thread] = None
         self._interval_minutes = _DEFAULT_INTERVAL_MINUTES
 
-        # Statistieken
         self._cycles_completed = 0
         self._total_trades_executed = 0
         self._last_cycle_time: Optional[str] = None
         self._last_cycle_decisions: List[Dict] = []
+        self._last_signals: List[Dict] = []
         self._last_error: Optional[str] = None
         self._started_at: Optional[str] = None
         self._cycle_summaries: List[Dict] = []
 
-    # ------------------------------------------------------------------
-    # Lifecycle
-    # ------------------------------------------------------------------
+    # ── Lifecycle ───────────────────────────────────────────────────
 
     def start(self, interval_minutes: int = _DEFAULT_INTERVAL_MINUTES) -> bool:
-        """Start de autonome trading-loop in een achtergrondthread."""
         if self._running:
             return False
         self._interval_minutes = max(1, interval_minutes)
@@ -73,12 +73,13 @@ class AutoTrader:
         self._started_at = datetime.now(timezone.utc).isoformat()
         self._thread = threading.Thread(target=self._loop, daemon=True, name="auto-trader")
         self._thread.start()
-        ai_mode = "Groq/Llama 3.3 70B" if self._groq.is_available() else "technisch (geen Groq)"
-        logger.info("Auto-trader gestart (interval=%dm, modus=%s).", self._interval_minutes, ai_mode)
+        ml_mode = "ML" if self._predictor.is_model_loaded() else "rules-fallback"
+        rl_mode = "RL" if self._portfolio_mgr.is_model_loaded() else "rules-fallback"
+        logger.info("Auto-trader gestart (interval=%dm, signals=%s, portfolio=%s).",
+                     self._interval_minutes, ml_mode, rl_mode)
         return True
 
     def stop(self) -> bool:
-        """Stop de autonome trading-loop."""
         if not self._running:
             return False
         self._running = False
@@ -89,23 +90,6 @@ class AutoTrader:
         return self._running
 
     def get_status(self) -> Dict[str, Any]:
-        """Retourneer huidige status voor het dashboard."""
-        cash = self._data.get_cash_balance()
-        holdings = self._data.get_holdings()
-        total_market_value = 0.0
-        for h in holdings:
-            try:
-                instrument = self._market.get_instrument(str(h["symbol"]), str(h["market"]))
-                price = float(self._market.get_snapshot(instrument)["price"])
-                total_market_value += price * float(h["quantity"])
-            except Exception:
-                total_market_value += float(h["invested_amount"])
-
-        total_equity = cash + total_market_value
-        start_balance = float(self._data._get_setting("start_balance", "2000"))
-        total_pnl = total_equity - start_balance
-        pnl_pct = (total_pnl / start_balance * 100) if start_balance > 0 else 0
-
         return {
             "running": self._running,
             "started_at": self._started_at,
@@ -115,26 +99,18 @@ class AutoTrader:
             "last_cycle_time": self._last_cycle_time,
             "last_decisions": self._last_cycle_decisions,
             "last_error": self._last_error,
-            "groq_available": self._groq.is_available(),
-            "groq_rate_limited": self._groq.is_rate_limited(),
-            "ai_mode": "groq" if self._groq.is_available() else "technical",
+            "ml_signal_model": self._predictor.is_model_loaded(),
+            "ml_signal_version": self._predictor.get_model_version(),
+            "rl_portfolio_model": self._portfolio_mgr.is_model_loaded(),
             "cycle_summaries": self._cycle_summaries[-10:],
-            # Portfolio snapshot
-            "cash": round(cash, 2),
-            "market_value": round(total_market_value, 2),
-            "total_equity": round(total_equity, 2),
-            "start_balance": round(start_balance, 2),
-            "total_pnl": round(total_pnl, 2),
-            "total_pnl_pct": round(pnl_pct, 2),
-            "open_positions": len(holdings),
         }
 
-    # ------------------------------------------------------------------
-    # Hoofdloop
-    # ------------------------------------------------------------------
+    def get_last_signals(self) -> List[Dict]:
+        return self._last_signals
+
+    # ── Hoofdloop ───────────────────────────────────────────────────
 
     def _loop(self) -> None:
-        """Achtergrondloop die elke interval een cycle draait."""
         while self._running:
             try:
                 self._run_cycle()
@@ -142,7 +118,6 @@ class AutoTrader:
                 self._last_error = f"{type(exc).__name__}: {exc}"
                 logger.error("Auto-trader cycle fout: %s", exc, exc_info=True)
 
-            # Wacht interval (in stappen van 10s zodat stop snel reageert)
             wait_seconds = self._interval_minutes * 60
             elapsed = 0
             while elapsed < wait_seconds and self._running:
@@ -150,318 +125,231 @@ class AutoTrader:
                 elapsed += 10
 
     def _run_cycle(self) -> None:
-        """Eén complete trading-cyclus: scan → AI beslissing → uitvoeren → leren."""
         now = datetime.now(timezone.utc).isoformat()
         self._last_cycle_time = now
         self._last_error = None
 
-        logger.info("Auto-trader cyclus %d gestart.", self._cycles_completed + 1)
+        logger.info("Cyclus %d gestart.", self._cycles_completed + 1)
 
-        # 1. Verzamel marktdata en signalen
-        signals = self._get_signals()
-        if not signals:
-            logger.info("Geen signalen beschikbaar; cyclus overgeslagen.")
+        # 1. Marktdata → histories ophalen
+        instrument_histories = self._get_instrument_histories()
+        if not instrument_histories:
+            logger.info("Geen marktdata beschikbaar; cyclus overgeslagen.")
             self._cycles_completed += 1
             return
 
-        # 2. Haal huidige portfolio state
+        # 2. Features berekenen
+        features_df = self._features.compute_batch(instrument_histories)
+        if features_df.empty:
+            logger.info("Geen features berekend; cyclus overgeslagen.")
+            self._cycles_completed += 1
+            return
+
+        # 3. Signalen voorspellen
+        signals = self._predictor.predict(features_df)
+        self._last_signals = signals
+
+        # Voeg live prijzen toe aan signalen
+        for sig in signals:
+            try:
+                instrument = self._market.get_instrument(sig["symbol"])
+                sig["price"] = float(self._market.get_snapshot(instrument)["price"])
+                sig["market"] = instrument.get("market", "us")
+            except Exception:
+                sig["price"] = 0.0
+                sig["market"] = "us"
+
+        # 4. Portfolio beslissingen
         holdings = self._data.get_holdings()
         cash = self._data.get_cash_balance()
+        start_balance = self._data.get_start_balance()
+        total_invested = sum(float(h["invested_amount"]) for h in holdings)
+        total_equity = cash + total_invested
+        daily_pnl = self._data.get_daily_realized_pnl()
 
-        # 3. Bouw context voor AI
-        trade_summary = self._build_trade_summary()
-        perf_summary = self._build_performance_summary()
-
-        # 4. Vraag AI om beslissingen
-        if self._groq.is_available() and not self._groq.is_rate_limited():
-            signal_dicts = [s.model_dump() for s in signals]
-            decisions = self._groq.decide_trades(
-                signals=signal_dicts,
-                holdings=holdings,
-                cash=cash,
-                trade_history_summary=trade_summary,
-                performance_summary=perf_summary,
-            )
-        else:
-            decisions = self._decide_without_ai(signals, holdings, cash)
-
+        decisions = self._portfolio_mgr.decide(
+            signals=signals, holdings=holdings, cash=cash,
+            total_equity=total_equity, start_balance=start_balance, daily_pnl=daily_pnl,
+        )
         self._last_cycle_decisions = decisions
-        logger.info("AI gaf %d beslissingen.", len(decisions))
+        logger.info("Portfolio manager gaf %d beslissingen.", len(decisions))
 
-        # 5. Voer beslissingen uit
+        # 5. Trades uitvoeren
         executed = 0
+        model_version = self._predictor.get_model_version() or "rules"
         for decision in decisions[:_MAX_TRADES_PER_CYCLE]:
-            success = self._execute_decision(decision, cash, holdings)
+            success = self._execute_decision(decision, model_version)
             if success:
                 executed += 1
-                # Herlaad cash na elke trade
-                cash = self._data.get_cash_balance()
-                holdings = self._data.get_holdings()
 
         self._total_trades_executed += executed
 
-        # 6. Leer van resultaten
-        self._learn_from_results()
+        # 6. Feature snapshots opslaan voor retraining
+        self._save_feature_snapshots(signals, features_df)
+
+        # 7. Portfolio snapshot
+        cash = self._data.get_cash_balance()
+        holdings = self._data.get_holdings()
+        market_value = self._compute_market_value(holdings)
+        self._data.record_portfolio_snapshot(cash + market_value)
+
+        # 8. Model performance metrics
+        self._update_performance_metrics()
 
         self._cycles_completed += 1
-        logger.info(
-            "Auto-trader cyclus %d voltooid: %d/%d trades uitgevoerd.",
-            self._cycles_completed, executed, len(decisions),
-        )
-        cycle_summary = {
+        logger.info("Cyclus %d voltooid: %d/%d trades.", self._cycles_completed, executed, len(decisions))
+
+        self._cycle_summaries.append({
             "cycle": self._cycles_completed,
             "timestamp": now,
             "decisions_count": len(decisions),
             "executed_count": executed,
-            "decisions": decisions[:5],
+            "signals_count": len(signals),
             "cash_after": round(self._data.get_cash_balance(), 2),
-            "ai_mode": "groq" if self._groq.is_available() else "technical",
-        }
-        self._cycle_summaries.append(cycle_summary)
+        })
         if len(self._cycle_summaries) > _MAX_CYCLE_HISTORY:
             self._cycle_summaries = self._cycle_summaries[-_MAX_CYCLE_HISTORY:]
 
-    # ------------------------------------------------------------------
-    # Signalen ophalen
-    # ------------------------------------------------------------------
+    # ── Marktdata ophalen ───────────────────────────────────────────
 
-    def _get_signals(self) -> list:
-        """Haal technische signalen op via de advice engine."""
+    def _get_instrument_histories(self) -> Dict[str, pd.DataFrame]:
+        """Haal OHLCV histories op voor alle instrumenten in de watchlist."""
+        histories: Dict[str, pd.DataFrame] = {}
         try:
-            if self._market.has_warm_stock_cache():
-                return self._advice.build_ranked_buy_signals()
-            else:
-                self._market.ensure_background_prefetch_started()
-                return self._advice.build_ranked_buy_signals(
-                    watchlist=self._market.get_fast_watchlist(),
-                )
+            watchlist = self._market.get_watchlist()
+            if not watchlist:
+                watchlist = self._market.get_fast_watchlist()
+
+            for instrument in watchlist:
+                symbol = instrument.get("symbol", "")
+                try:
+                    hist = self._market.get_history(instrument)
+                    if hist is not None and len(hist) >= 50:
+                        # Converteer naar DataFrame als het een dict/list is
+                        if isinstance(hist, pd.DataFrame):
+                            histories[symbol] = hist
+                        elif isinstance(hist, list) and hist:
+                            histories[symbol] = pd.DataFrame(hist)
+                except Exception:
+                    continue
         except Exception as exc:
-            logger.warning("Kon signalen niet ophalen: %s", exc)
-            return []
+            logger.warning("Kon watchlist niet ophalen: %s", exc)
+        return histories
 
-    # ------------------------------------------------------------------
-    # Trade uitvoering
-    # ------------------------------------------------------------------
+    # ── Trade uitvoering ────────────────────────────────────────────
 
-    def _execute_decision(
-        self,
-        decision: Dict,
-        cash: float,
-        holdings: List[Dict],
-    ) -> bool:
-        """Voer één AI-beslissing uit via de bestaande trade engine."""
+    def _execute_decision(self, decision: Dict, model_version: str) -> bool:
         symbol = decision["symbol"]
         action = decision["action"]
-        fraction = decision["fraction"]
-        reason = decision.get("reason", "AI auto-trade")
+        amount = decision.get("amount", 0)
+        fraction = decision.get("fraction", 0.25)
 
         try:
             if action == "buy":
-                amount = cash * fraction
                 if amount < 1.0:
-                    logger.info("Skip buy %s: bedrag te klein (€%.2f)", symbol, amount)
                     return False
-
-                # Bepaal markt
                 market = self._detect_market(symbol)
-                request = TradeRequest(
-                    symbol=symbol,
-                    action="buy",
-                    amount=amount,
-                    market=market,
-                )
-                signal_map = self._advice.build_signal_map()
+                request = TradeRequest(symbol=symbol, action="buy", amount=amount, market=market)
                 result = execute_trade(
                     request, self._limits, self._data, self._market,
-                    signal_map.get(symbol),
+                    confidence=decision.get("confidence", 0), model_version=model_version,
                 )
                 success = result.status.startswith("executed")
                 if success:
-                    logger.info(
-                        "AUTO BUY %s: %.4f stuks @ €%.2f (€%.2f) — %s",
-                        symbol, result.quantity, result.price, result.amount, reason,
-                    )
-                else:
-                    logger.info("AUTO BUY %s afgewezen: %s", symbol, result.status)
+                    logger.info("BUY %s: %.4f @ €%.2f (€%.2f) — %s",
+                                symbol, result.quantity, result.price, result.amount, decision.get("reason", ""))
                 return success
 
             elif action == "sell":
                 holding = self._data.get_holding(symbol)
                 if not holding:
-                    logger.info("Skip sell %s: geen positie.", symbol)
                     return False
-
-                sell_quantity = float(holding["quantity"]) * fraction
-                if sell_quantity <= 0:
+                sell_qty = float(holding["quantity"]) * fraction
+                if sell_qty <= 0:
                     return False
-
                 request = TradeRequest(
-                    symbol=symbol,
-                    action="sell",
-                    amount=0.0,
-                    market=str(holding["market"]),
-                    quantity=sell_quantity,
+                    symbol=symbol, action="sell", amount=0.0,
+                    market=str(holding["market"]), quantity=sell_qty,
                 )
                 result = execute_trade(
                     request, self._limits, self._data, self._market,
+                    confidence=decision.get("confidence", 0), model_version=model_version,
                 )
                 success = result.status.startswith("executed")
                 if success:
-                    logger.info(
-                        "AUTO SELL %s: %.4f stuks @ €%.2f, P/L €%.2f — %s",
-                        symbol, result.quantity, result.price, result.profit_loss, reason,
-                    )
-                else:
-                    logger.info("AUTO SELL %s afgewezen: %s", symbol, result.status)
+                    logger.info("SELL %s: %.4f @ €%.2f, P/L €%.2f — %s",
+                                symbol, result.quantity, result.price, result.profit_loss, decision.get("reason", ""))
                 return success
 
         except Exception as exc:
-            logger.warning("Auto-trade %s %s mislukt: %s", action, symbol, exc)
+            logger.warning("Trade %s %s mislukt: %s", action, symbol, exc)
             return False
-
         return False
 
-    def _decide_without_ai(self, signals: list, holdings: List[Dict], cash: float) -> List[Dict]:
-        """Eenvoudige rule-based beslissingen als Groq niet beschikbaar is."""
-        decisions: List[Dict] = []
-
-        # Verkoop posities met >5% winst of <-3% verlies (stop-loss)
-        for holding in holdings:
-            symbol = str(holding["symbol"])
-            market = str(holding["market"])
-            try:
-                instrument = self._market.get_instrument(symbol, market)
-                price = float(self._market.get_snapshot(instrument)["price"])
-                avg_price = float(holding["avg_entry_price"])
-                if avg_price <= 0:
-                    continue
-                pnl_pct = (price - avg_price) / avg_price * 100
-                if pnl_pct >= 5.0:
-                    decisions.append({
-                        "symbol": symbol,
-                        "action": "sell",
-                        "fraction": 1.0,
-                        "reason": f"Winst genomen: +{pnl_pct:.1f}%",
-                    })
-                elif pnl_pct <= -3.0:
-                    decisions.append({
-                        "symbol": symbol,
-                        "action": "sell",
-                        "fraction": 1.0,
-                        "reason": f"Stop-loss geraakt: {pnl_pct:.1f}%",
-                    })
-            except Exception:
-                continue
-
-        # Koop top-signalen als er genoeg cash is
-        if cash >= 50:
-            held_symbols = {str(h["symbol"]).upper() for h in holdings}
-            buy_signals = sorted(
-                [s for s in signals if hasattr(s, "action") and s.action == "buy"],
-                key=lambda s: getattr(s, "ranking_score", 0),
-                reverse=True,
-            )
-            for signal in buy_signals[:2]:
-                symbol = getattr(signal, "symbol", "").upper()
-                if not symbol or symbol in held_symbols:
-                    continue
-                decisions.append({
-                    "symbol": symbol,
-                    "action": "buy",
-                    "fraction": 0.25,
-                    "reason": f"Top technisch signaal: {getattr(signal, 'reason', 'n/a')}",
-                })
-
-        return decisions
-
     def _detect_market(self, symbol: str) -> str:
-        """Probeer het juiste markttype te detecteren voor een symbool."""
         try:
             instrument = self._market.get_instrument(symbol)
             return str(instrument.get("market", "us"))
         except Exception:
-            # Heuristiek
-            symbol_upper = symbol.upper()
-            if symbol_upper.endswith("USD") or symbol_upper in (
-                "BTC-USD", "ETH-USD", "SOL-USD", "XRP-USD", "ADA-USD",
-                "DOGE-USD", "DOT-USD", "AVAX-USD", "LINK-USD", "MATIC-USD",
-            ):
+            s = symbol.upper()
+            if s.endswith("USD") or s in ("BTC-USD", "ETH-USD", "SOL-USD", "XRP-USD",
+                                          "ADA-USD", "DOGE-USD", "DOT-USD", "AVAX-USD", "LINK-USD"):
                 return "crypto"
-            if symbol_upper in ("GC=F", "SI=F", "CL=F", "NG=F", "PL=F"):
+            if s in ("GC=F", "SI=F", "CL=F", "NG=F", "PL=F"):
                 return "commodity"
             return "us"
 
-    # ------------------------------------------------------------------
-    # Leren
-    # ------------------------------------------------------------------
+    # ── Feature snapshots ───────────────────────────────────────────
 
-    def _learn_from_results(self) -> None:
-        """Laat de learning agent leren van de hele trade-historie."""
+    def _save_feature_snapshots(self, signals: List[Dict], features_df: pd.DataFrame) -> None:
+        """Sla feature snapshots op voor top signalen (voor retraining)."""
+        try:
+            for sig in signals[:20]:
+                symbol = sig["symbol"]
+                if symbol in features_df.index:
+                    features = features_df.loc[symbol].to_dict()
+                    self._data.save_feature_snapshot(
+                        symbol=symbol,
+                        features_json=json.dumps({k: round(float(v), 6) for k, v in features.items()}),
+                        signal_action=sig["action"],
+                        confidence=sig.get("confidence", 0),
+                    )
+        except Exception as exc:
+            logger.warning("Feature snapshot opslaan mislukt: %s", exc)
+
+    # ── Performance metrics ─────────────────────────────────────────
+
+    def _update_performance_metrics(self) -> None:
         try:
             history = self._data.get_trade_history()
-            signals = self._advice.build_signals()
-            self._learning.learn(history, signals)
-            self._advice.apply_learned_params(self._learning.get_engine_params())
-            self._learning.save_params(self._data)
+            sells = [t for t in history if t.action == "sell" and t.status.startswith("executed")]
+            if not sells:
+                return
+
+            wins = sum(1 for t in sells if t.profit_loss > 0)
+            total_pl = sum(t.profit_loss for t in sells)
+            win_rate = wins / len(sells) if sells else 0
+
+            self._data.save_model_performance({
+                "win_rate": round(win_rate, 4),
+                "total_trades": len(sells),
+                "total_pnl": round(total_pl, 2),
+                "avg_pnl": round(total_pl / len(sells), 2) if sells else 0,
+                "signal_model_loaded": self._predictor.is_model_loaded(),
+                "rl_model_loaded": self._portfolio_mgr.is_model_loaded(),
+            })
         except Exception as exc:
-            logger.warning("Learning-stap mislukt: %s", exc)
+            logger.warning("Performance metrics opslaan mislukt: %s", exc)
 
-    def _build_trade_summary(self) -> str:
-        """Bouw een korte samenvatting van recente trades voor de AI prompt."""
-        history = self._data.get_trade_history()
-        if not history:
-            return "Nog geen trades uitgevoerd."
+    # ── Helpers ─────────────────────────────────────────────────────
 
-        recent = history[-20:]
-        sells = [t for t in recent if t.action == "sell" and t.status.startswith("executed")]
-        buys = [t for t in recent if t.action == "buy" and t.status.startswith("executed")]
-
-        total_pl = sum(t.profit_loss for t in sells)
-        winners = sum(1 for t in sells if t.profit_loss > 0)
-        losers = sum(1 for t in sells if t.profit_loss < 0)
-
-        parts = [
-            f"Laatste {len(recent)} trades: {len(buys)} kopen, {len(sells)} verkopen.",
-            f"Resultaat verkopen: {winners} winst, {losers} verlies, netto €{total_pl:.2f}.",
-        ]
-
-        # Symbolen met verlies
-        loss_syms: Dict[str, float] = {}
-        for t in sells:
-            if t.profit_loss < 0:
-                loss_syms[t.symbol] = loss_syms.get(t.symbol, 0) + t.profit_loss
-        if loss_syms:
-            worst = sorted(loss_syms.items(), key=lambda x: x[1])[:3]
-            parts.append(f"Verliezers: {', '.join(f'{s} (€{v:.2f})' for s, v in worst)}.")
-
-        # Symbolen met winst
-        win_syms: Dict[str, float] = {}
-        for t in sells:
-            if t.profit_loss > 0:
-                win_syms[t.symbol] = win_syms.get(t.symbol, 0) + t.profit_loss
-        if win_syms:
-            best = sorted(win_syms.items(), key=lambda x: x[1], reverse=True)[:3]
-            parts.append(f"Winnaars: {', '.join(f'{s} (+€{v:.2f})' for s, v in best)}.")
-
-        return " ".join(parts)
-
-    def _build_performance_summary(self) -> str:
-        """Bouw een snapshot van de huidige portfolio performance."""
-        cash = self._data.get_cash_balance()
-        holdings = self._data.get_holdings()
-        start_balance = float(self._data._get_setting("start_balance", "2000"))
-
-        total_invested = sum(float(h.get("invested_amount", 0)) for h in holdings)
-        total_equity = cash + total_invested  # vereenvoudigd (invested ≈ market value)
-        pnl = total_equity - start_balance
-        pnl_pct = (pnl / start_balance * 100) if start_balance > 0 else 0
-
-        return (
-            f"Startkapitaal: €{start_balance:.2f} | "
-            f"Cash: €{cash:.2f} | "
-            f"Geïnvesteerd: €{total_invested:.2f} | "
-            f"Totaal: €{total_equity:.2f} | "
-            f"P/L: €{pnl:+.2f} ({pnl_pct:+.1f}%) | "
-            f"Open posities: {len(holdings)} | "
-            f"Cyclus: {self._cycles_completed + 1}"
-        )
+    def _compute_market_value(self, holdings: List[Dict]) -> float:
+        total = 0.0
+        for h in holdings:
+            try:
+                instrument = self._market.get_instrument(str(h["symbol"]), str(h["market"]))
+                price = float(self._market.get_snapshot(instrument)["price"])
+                total += price * float(h["quantity"])
+            except Exception:
+                total += float(h["invested_amount"])
+        return total

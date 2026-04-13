@@ -24,3 +24,5 @@ class TradeResult(BaseModel):
     status: str
     expected_return_pct: float = 0.0
     risk_pct: float = 0.0
+    confidence: float = 0.0
+    model_version: str = ""

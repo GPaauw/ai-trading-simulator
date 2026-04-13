@@ -1,19 +1,17 @@
 from pydantic import BaseModel
+from typing import Dict
 
 
 class Signal(BaseModel):
-    id: str
     symbol: str
-    market: str  # "us", "eu" of "crypto"
-    action: str  # "buy", "sell" of "hold"
+    market: str = "us"
+    action: str  # "buy", "sell", "hold"
+    action_detail: str = ""
     confidence: float
-    price: float
-    risk_pct: float
-    expected_return_pct: float
-    target_price: float = 0.0
-    expected_profit: float = 0.0  # verwachte winst bij investering van €1000
-    expected_days: int = 0  # geschatte dagen tot koersdoel
+    price: float = 0.0
+    expected_return_pct: float = 0.0
+    risk_score: float = 0.0
+    horizon_days: int = 1
     ranking_score: float = 0.0
-    rank_label: str = ""
-    reason: str
-    strategy: str = "daytrade"  # "daytrade" or "longterm"
+    probabilities: Dict[str, float] = {}
+    reason: str = ""
