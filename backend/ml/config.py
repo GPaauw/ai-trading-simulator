@@ -25,6 +25,38 @@ FEATURE_COLUMNS: List[str] = [
 
 NUM_FEATURES = len(FEATURE_COLUMNS)
 
+# ── V2 feature definities (originele 28 + 22 nieuwe) ───────────────
+FEATURE_COLUMNS_V2: List[str] = FEATURE_COLUMNS + [
+    # Alternatieve data (Module 2: AlternativeDataCollector)
+    "sentiment_score",                  # FinBERT ∈ [0, 1]
+    "reddit_mention_velocity",          # 24h growth rate
+    "insider_buy_sell_ratio",           # EDGAR Form 4 ∈ [0, 1]
+    "institutional_holdings_delta",     # EDGAR 13F genormaliseerd
+    # Macro (FRED)
+    "vix_level",                        # huidig VIX niveau
+    "vix_5d_change",                    # 5-dag VIX delta
+    # Market regime (Module 1: RegimeClassifier)
+    "regime_bear",                      # one-hot
+    "regime_sideways",                  # one-hot
+    "regime_bull",                      # one-hot
+    "regime_high_vol",                  # one-hot
+    # Order flow proxy
+    "order_book_imbalance",             # (close-low)/(high-low) ∈ [0, 1]
+    # Earnings
+    "days_since_earnings",              # dagen sinds laatste earnings
+    "earnings_surprise",                # beat/miss indicator
+    # Extra technische indicatoren
+    "keltner_position",                 # positie in Keltner Channel ∈ [0, 1]
+    "vwap_deviation",                   # afwijking van VWAP (%)
+    "heikin_ashi_streak",               # bullish ratio laatste 5 bars ∈ [0, 1]
+    "adx_14",                           # Average Directional Index (trendsterkte)
+    "cmf_20",                           # Chaikin Money Flow ∈ [-1, 1]
+    "vol_ratio_5_20",                   # korte/lange volatiliteit ratio
+    "momentum_divergence",              # prijs-RSI divergentie {-1, 0, 1}
+]
+
+NUM_FEATURES_V2 = len(FEATURE_COLUMNS_V2)
+
 # ── Signal klassen ──────────────────────────────────────────────────
 SIGNAL_CLASSES = ["strong_sell", "sell", "hold", "buy", "strong_buy"]
 NUM_CLASSES = len(SIGNAL_CLASSES)

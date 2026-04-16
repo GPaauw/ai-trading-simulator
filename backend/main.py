@@ -21,9 +21,9 @@ from services.feature_engine import FeatureEngine
 from services.market_data_service import MarketDataService
 from services.signal_predictor import SignalPredictor
 from services.portfolio_manager import PortfolioManager
-from services.auto_trader import AutoTrader
+from services.auto_trader_v2 import AutoTraderV2
 
-app = FastAPI(title="AI Trading Bot", version="3.0.0")
+app = FastAPI(title="AI Trading Bot", version="4.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -58,26 +58,107 @@ def startup_event() -> None:
     signal_predictor = SignalPredictor()
     portfolio_manager = PortfolioManager()
 
-    auto_trader = AutoTrader(
+    # ── V2 modules laden (graceful degradation) ─────────────────────
+    _log = logging.getLogger(__name__)
+
+    regime_classifier = None
+    try:
+        from ml.regime_classifier import RegimeClassifier
+        regime_classifier = RegimeClassifier()
+        _log.info("RegimeClassifier geladen.")
+    except Exception as exc:
+        _log.warning("RegimeClassifier niet beschikbaar: %s", exc)
+
+    market_scanner = None
+    try:
+        from services.market_scanner import MarketScanner
+        market_scanner = MarketScanner(regime_classifier=regime_classifier)
+        _log.info("MarketScanner geladen.")
+    except Exception as exc:
+        _log.warning("MarketScanner niet beschikbaar: %s", exc)
+
+    sentiment_analyzer = None
+    try:
+        from ml.sentiment_analyzer import SentimentAnalyzer
+        sentiment_analyzer = SentimentAnalyzer()
+        _log.info("SentimentAnalyzer geladen.")
+    except Exception as exc:
+        _log.warning("SentimentAnalyzer niet beschikbaar: %s", exc)
+
+    alternative_data = None
+    try:
+        from services.alternative_data import AlternativeDataCollector
+        alternative_data = AlternativeDataCollector(sentiment_analyzer=sentiment_analyzer)
+        _log.info("AlternativeDataCollector geladen.")
+    except Exception as exc:
+        _log.warning("AlternativeDataCollector niet beschikbaar: %s", exc)
+
+    smart_money_tracker = None
+    try:
+        from services.smart_money_tracker import SmartMoneyTracker
+        smart_money_tracker = SmartMoneyTracker()
+        _log.info("SmartMoneyTracker geladen.")
+    except Exception as exc:
+        _log.warning("SmartMoneyTracker niet beschikbaar: %s", exc)
+
+    ensemble_predictor = None
+    try:
+        from ml.ensemble_lgbm import EnsembleLightGBM
+        ensemble_predictor = EnsembleLightGBM()
+        _log.info("EnsembleLightGBM geladen.")
+    except Exception as exc:
+        _log.warning("EnsembleLightGBM niet beschikbaar: %s", exc)
+
+    recurrent_ppo = None
+    try:
+        from ml.recurrent_ppo import RecurrentPPOAgent
+        from ml.config import NUM_FEATURES_V2
+        n_actions = 10  # max 10 assets in universum
+        obs_dim = 16 + n_actions * 3  # base features + per-asset signals
+        recurrent_ppo = RecurrentPPOAgent(obs_dim=obs_dim, n_actions=n_actions)
+        _log.info("RecurrentPPOAgent geladen (obs_dim=%d, n_actions=%d).", obs_dim, n_actions)
+    except Exception as exc:
+        _log.warning("RecurrentPPOAgent niet beschikbaar: %s", exc)
+
+    simulated_broker = None
+    try:
+        from services.simulated_broker import SimulatedBroker
+        start_balance = data_service.get_start_balance()
+        simulated_broker = SimulatedBroker(initial_cash=start_balance)
+        _log.info("SimulatedBroker geladen (cash=%.2f).", start_balance)
+    except Exception as exc:
+        _log.warning("SimulatedBroker niet beschikbaar: %s", exc)
+
+    # ── AutoTrader v2 opzetten ──────────────────────────────────────
+    auto_trader = AutoTraderV2(
         data_service=data_service,
         market_data_service=market_data_service,
         feature_engine=feature_engine,
         signal_predictor=signal_predictor,
         portfolio_manager=portfolio_manager,
         limits=LIMITS,
+        market_scanner=market_scanner,
+        alternative_data=alternative_data,
+        smart_money_tracker=smart_money_tracker,
+        ensemble_predictor=ensemble_predictor,
+        regime_classifier=regime_classifier,
+        recurrent_ppo=recurrent_ppo,
+        simulated_broker=simulated_broker,
     )
 
     try:
         market_data_service.start_prefetch_scheduler(interval_seconds=300)
     except Exception as exc:
-        logging.getLogger(__name__).warning("Prefetch scheduler start mislukt: %s", exc)
+        _log.warning("Prefetch scheduler start mislukt: %s", exc)
 
     try:
-        interval = int(os.environ.get("AUTO_TRADE_INTERVAL", "5"))
-        auto_trader.start(interval_minutes=interval)
-        logging.getLogger(__name__).info("Auto-trader gestart (interval=%dm).", interval)
+        interval = int(os.environ.get("AUTO_TRADE_V2_INTERVAL",
+                                       os.environ.get("AUTO_TRADE_INTERVAL", "5")))
+        dry_run = os.environ.get("AUTO_TRADE_V2_DRY_RUN", "false").lower() == "true"
+        auto_trader.start(interval_minutes=interval, dry_run=dry_run)
+        _log.info("AutoTrader v2 gestart (interval=%dm, dry_run=%s).", interval, dry_run)
     except Exception as exc:
-        logging.getLogger(__name__).warning("Auto-trader start mislukt: %s", exc)
+        _log.warning("AutoTrader v2 start mislukt: %s", exc)
 
 
 # ════════════════════════════════════════════════════════════════════

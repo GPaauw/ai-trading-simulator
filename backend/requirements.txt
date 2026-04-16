@@ -1,12 +1,31 @@
+# ── Core ────────────────────────────────────────────────
 fastapi==0.115.12
 uvicorn[standard]==0.34.0
 pydantic==2.11.3
-yfinance>=0.2.40
-psycopg2-binary>=2.9.0
 numpy>=1.26.0
 pandas>=2.1.0
-lightgbm>=4.1.0
 joblib>=1.3.0
-stable-baselines3>=2.2.0
-gymnasium>=0.29.0
+
+# ── Data bronnen ────────────────────────────────────────
+yfinance>=0.2.40
+ccxt>=4.1.0
+feedparser>=6.0.0
+pandas-datareader>=0.10.0
+
+# ── Database ────────────────────────────────────────────
+psycopg2-binary>=2.9.0
+
+# ── ML / Signaalmodellen ────────────────────────────────
+lightgbm>=4.1.0
 scikit-learn>=1.3.0
+shap>=0.43.0
+imbalanced-learn>=0.12.0
+
+# ── RL / Portfolio management ───────────────────────────
+gymnasium>=0.29.0
+stable-baselines3>=2.2.0
+sb3-contrib>=2.2.0
+
+# ── NLP / Sentiment ────────────────────────────────────
+transformers>=4.36.0
+torch>=2.1.0

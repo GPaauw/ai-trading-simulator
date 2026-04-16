@@ -1,119 +1,212 @@
-# AI Market Advisor (US, EU en Crypto)
+# AI Trading Simulator v2
 
-Deze app geeft marktadvies in plaats van random trades:
-- FastAPI-backend met live gratis data
-- Flutter Web-frontend met adviesdashboard
-- Markten: US stocks, EU stocks en crypto
-- Marktadvies toont alleen koopkansen, opgesplitst in aandelen en crypto
-- Koopadvies krijgt een echte score en labels zoals `Beste kansen vandaag`
-- Registratie van echte aankopen met live holdings-overzicht
-- Verkoopadvies toont alleen je eigen bezittingen met `houden` of `verkopen`
-- Verkoopadvies ondersteunt triggers zoals `Verkoop nu`, `Neem deels winst` en `Houd nog vast`
-- Positie-alerts kunnen mailen zodra een advies omslaat naar verkopen of winst nemen
-- Holdings, tradehistorie en cash-balans worden persistent opgeslagen in SQLite
-- E-mailalerts (realtime + dagoverzicht)
+Autonome AI-gestuurde trading bot voor high-volatility, high-liquidity markten (crypto + US momentum stocks).
 
-## Data bronnen (gratis)
+## Architectuur
 
-- US/EU stocks: Stooq publieke endpoints
-- Crypto: Binance publieke endpoints
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                     AutoTrader v2 (orchestratie)                │
+│  12-staps cyclus met graceful degradation per module            │
+├──────────┬──────────┬──────────┬──────────┬──────────┬─────────┤
+│ Market   │ Alt-Data │ Smart    │ Feature  │ Ensemble │Recurrent│
+│ Scanner  │ Collector│ Money    │ Engine   │ LightGBM │  PPO    │
+│          │          │ Tracker  │ (48 feat)│ (3-win)  │ (LSTM)  │
+├──────────┴──────────┴──────────┼──────────┴──────────┴─────────┤
+│ Regime Classifier   Sentiment │ Simulated Broker               │
+│ (bull/bear/sideways/high_vol) │ (order book, slippage, fees)   │
+└───────────────────────────────┴────────────────────────────────┘
+```
 
-Let op: gratis bronnen zijn prima voor MVP/paper trading, maar minder geschikt voor low-latency productiehandel.
+### V2 Modules
 
-## Watchlist (10)
+| Module | Bestand | Functie |
+|--------|---------|---------|
+| **MarketScanner** | `services/market_scanner.py` | Dynamisch universum: top-5 crypto (ccxt/Binance) + top-5 stocks (yfinance) op momentum, volume, volatiliteit |
+| **RegimeClassifier** | `ml/regime_classifier.py` | LightGBM classificatie → bull/bear/sideways/high_vol met heuristische fallback |
+| **SentimentAnalyzer** | `ml/sentiment_analyzer.py` | Lokaal FinBERT (ProsusAI/finbert) sentiment scoring [-1, +1] |
+| **AlternativeData** | `services/alternative_data.py` | Reddit, News RSS, SEC EDGAR, FRED macro data → feature injectie |
+| **SmartMoneyTracker** | `services/smart_money_tracker.py` | Insider clusters, institutional flow, whale activity, options P/C, dark pool → conviction score |
+| **FeatureEngine v2** | `services/feature_engine.py` | 48 technische + alternatieve features met regime/alt-data injectie |
+| **EnsembleLightGBM** | `ml/ensemble_lgbm.py` | 3-window ensemble (3m/1y/2y), SHAP uitleg, KL-drift detectie |
+| **RecurrentPPO** | `ml/recurrent_ppo.py` | LSTM-gebaseerde RL agent (sb3-contrib) met curriculum training |
+| **SimulatedBroker** | `services/simulated_broker.py` | Order book, 5 order types, volume-dependent slippage, margin, circuit breakers |
+| **AutoTrader v2** | `services/auto_trader_v2.py` | 12-staps trading loop met regime-adaptieve sizing en smart money boosting |
 
-- US: `AAPL`, `MSFT`, `NVDA`, `AMZN`
-- EU: `ASML`, `SAP`, `SIE`, `BMW`
-- Crypto: `BTC`, `ETH`
+### 12-staps Trading Cyclus
 
-## Login en basisinstellingen
+1. MarketScanner → dynamisch universum
+2. Marktdata ophalen (OHLCV)
+3. AlternativeData + SmartMoneyTracker (parallel)
+4. RegimeClassifier per asset
+5. FeatureEngine v2 (48 features met injecties)
+6. EnsembleLightGBM (of standaard SignalPredictor)
+7. Smart money conviction boost/demote
+8. RecurrentPPO (of standaard PortfolioManager)
+9. Regime-adaptieve position sizing (bull=1.2×, bear=0.5×, high_vol=0.6×)
+10. Trade execution via SimulatedBroker
+11. Housekeeping (snapshots, equity, broker day reset)
+12. Drift detection (elke 20 cycli)
 
-Verplicht:
-- `APP_USERNAME`
-- `APP_PASSWORD`
+## Data bronnen
 
-Optioneel:
-- `START_BALANCE` (default: `2000`)
-- `TRADING_DB_PATH` (default: `backend/data/trading.sqlite3`)
+| Bron | Type | Markt |
+|------|------|-------|
+| Binance (ccxt) | OHLCV, volume | Crypto |
+| yfinance | OHLCV, opties | US/EU stocks |
+| Stooq | Historische OHLCV | US/EU stocks |
+| SEC EDGAR | Form 4 insiders, 13F filings | US stocks |
+| FRED | VIX, CPI, rentes | Macro |
+| Blockchain.com | BTC whale transacties | Crypto |
+| Etherscan | ETH whale transacties | Crypto |
+| News RSS | Reuters, Yahoo, Seeking Alpha | Alle markten |
+| FINRA ATS | Dark pool volumes | US stocks |
 
-## E-mail alerts configuratie
+## Configuratie
 
-Voor realtime alerts en dagelijkse samenvatting:
-- `SMTP_HOST`
-- `SMTP_PORT` (default `587`)
-- `SMTP_USERNAME`
-- `SMTP_PASSWORD`
-- `ALERT_FROM_EMAIL`
-- `ALERT_TO_EMAIL` (default `gerritpaauw005@gmail.com`)
+### Verplicht
+- `APP_USERNAME` — login gebruikersnaam
+- `APP_PASSWORD` — login wachtwoord
+
+### Optioneel
+| Variabele | Default | Beschrijving |
+|-----------|---------|--------------|
+| `START_BALANCE` | `2000` | Startkapitaal in EUR |
+| `AUTO_TRADE_V2_INTERVAL` | `5` | Trading cyclus interval (minuten) |
+| `AUTO_TRADE_V2_DRY_RUN` | `false` | Dry run modus (geen echte trades) |
+| `AUTO_TRADE_V2_MAX_TRADES` | `8` | Max trades per cyclus |
+| `TRADING_DB_PATH` | `backend/data/trading.sqlite3` | SQLite pad |
+| `TOKEN_SECRET` | auto-generated | JWT token secret |
+
+### E-mail alerts
+- `SMTP_HOST`, `SMTP_PORT` (default `587`), `SMTP_USERNAME`, `SMTP_PASSWORD`
+- `ALERT_FROM_EMAIL`, `ALERT_TO_EMAIL`
 
 ## Lokaal starten
 
-### 1. Backend
+### Backend
 
 ```bash
 cd backend
 pip install -r requirements.txt
-APP_USERNAME APP_PASSWORD START_BALANCE=2000 uvicorn main:app --host 0.0.0.0 --port 8000
+APP_USERNAME=admin APP_PASSWORD=secret uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
-### 2. Frontend
+### Frontend
 
 ```bash
 cd frontend
-flutter pub get
-flutter run -d edge
+npm install
+npm run dev
 ```
 
-## Hoe je de app gebruikt
+## Backtest draaien
 
-1. Log in met je account.
-2. Bekijk `Koopadvies`: alleen koopkansen, opgesplitst in aandelen en crypto, met score en ranking.
-3. Klik bij een `BUY`-advies op `Ik kocht dit` en vul in wat je echt hebt gekocht.
-4. Bekijk `Verkoopadvies voor jouw posities`: alleen assets die je bezit, met `Verkoop nu`, `Neem deels winst` of `Houd nog vast`.
-5. Gebruik `Verkoop` of `Neem winst` bij een positie; de app vult bij gedeeltelijke winstname alvast een logisch deel van je positie in.
-6. Volg je resultaat in `Portfolio` en `Transactiegeschiedenis`.
-7. Klik op `Leer van markt + trades` om risico- en confidence-inzichten te updaten.
-8. Klik op `Stuur realtime alerts` of `Stuur dag samenvatting` voor e-mailnotificaties, inclusief statuswissels in je posities.
+```bash
+cd backend
+
+# Standaard (mixed preset: AAPL, MSFT, NVDA, TSLA, BTC, ETH)
+python -m ml.training.backtest_v2
+
+# Met preset
+python -m ml.training.backtest_v2 --preset momentum --start 2023-01-01 --end 2024-12-31
+
+# Custom symbolen
+python -m ml.training.backtest_v2 --symbols AAPL TSLA BTC-USD ETH-USD --balance 25000
+
+# Presets: momentum | crypto | mixed | eu
+```
+
+## Projectstructuur
+
+```
+backend/
+├── main.py                          # FastAPI app, v2-integratie
+├── requirements.txt
+├── auth/
+│   ├── security.py                  # Credentials validatie
+│   └── session.py                   # JWT token management
+├── models/
+│   ├── holding.py, signal.py, trade.py
+├── services/
+│   ├── data_service.py              # SQLite CRUD, portfolio state
+│   ├── market_data_service.py       # Stooq/Binance data layer
+│   ├── feature_engine.py            # 48-feature engine (v2)
+│   ├── signal_predictor.py          # LightGBM signaal classificatie
+│   ├── portfolio_manager.py         # PPO RL portfolio manager
+│   ├── trade_engine.py              # Trade execution (v1)
+│   ├── auto_trader.py               # Auto-trader v1 (legacy)
+│   ├── auto_trader_v2.py            # Auto-trader v2 (12-staps loop)
+│   ├── market_scanner.py            # Dynamisch universum scanner
+│   ├── alternative_data.py          # Alt-data collector
+│   ├── smart_money_tracker.py       # Smart money signalen
+│   └── simulated_broker.py          # Realistische broker simulatie
+├── ml/
+│   ├── config.py                    # ML configuratie + feature columns
+│   ├── regime_classifier.py         # Marktregime classificatie
+│   ├── sentiment_analyzer.py        # FinBERT NLP sentiment
+│   ├── ensemble_lgbm.py             # Multi-window ensemble
+│   ├── recurrent_ppo.py             # LSTM RL agent
+│   ├── trading_env_v2.py            # Gymnasium trading environment
+│   ├── models/                      # Opgeslagen modellen (.joblib)
+│   └── training/
+│       ├── train_signals.py         # Signaalmodel training
+│       ├── train_ensemble.py        # Ensemble training (SMOTE + CV)
+│       ├── train_recurrent_ppo.py   # 2-fase curriculum training
+│       ├── train_portfolio.py       # PPO portfolio training
+│       ├── backtest.py              # Backtest v1
+│       └── backtest_v2.py           # Backtest v2 (regime-adaptief)
+frontend/
+├── src/
+│   ├── App.tsx, main.tsx, api.ts
+│   ├── components/EquityChart.tsx
+│   └── pages/
+│       ├── Dashboard.tsx, Overview.tsx
+│       ├── Positions.tsx, Trades.tsx
+│       ├── AIInsight.tsx, Management.tsx
+│       └── LoginPage.tsx
+```
 
 ## API endpoints
 
-Publiek:
-- `GET /health`
-- `GET /signals`
-- `GET /advice` (alleen koopadvies)
-- `GET /watchlist`
-
-Auth vereist:
-- `POST /login`
-- `POST /trade`
-- `GET /history`
-- `GET /holdings`
-- `GET /sell-advice`
-- `GET /portfolio`
-- `POST /learn`
-- `POST /alerts/realtime`
-- `POST /alerts/summary`
+| Methode | Pad | Auth | Beschrijving |
+|---------|-----|------|-------------|
+| `GET` | `/health` | Nee | Health check |
+| `POST` | `/login` | Nee | Inloggen → JWT token |
+| `GET` | `/status` | Ja | Bot status + v2 module status |
+| `GET` | `/portfolio/summary` | Ja | Portfolio overzicht |
+| `GET` | `/portfolio/holdings` | Ja | Open posities |
+| `GET` | `/portfolio/history` | Ja | Portfolio historie |
+| `POST` | `/portfolio/deposit` | Ja | Geld storten |
+| `POST` | `/portfolio/withdraw` | Ja | Geld opnemen |
+| `GET` | `/trades/history` | Ja | Trade geschiedenis |
+| `GET` | `/ai/signals` | Ja | Laatste signalen |
+| `GET` | `/ai/insights` | Ja | AI analyse + feature importance |
+| `POST` | `/settings/update` | Ja | Interval/auto-trade wijzigen |
+| `GET` | `/auto-trader/summary` | Ja | Legacy compatibiliteit |
 
 ## Deployment
 
 ### Backend op Render
-
 - Root directory: `backend`
 - Build: `pip install -r requirements.txt`
 - Start: `uvicorn main:app --host 0.0.0.0 --port 8000`
 - Zet minimaal `APP_USERNAME` en `APP_PASSWORD`
 
 ### Frontend op GitHub Pages
+Gebruik `.github/workflows/deploy_frontend_pages.yml` en zet GitHub Pages op bron `gh-pages` / root.
 
-Gebruik [.github/workflows/deploy_frontend_pages.yml](.github/workflows/deploy_frontend_pages.yml) en zet GitHub Pages op bron `gh-pages` / root.
+## Graceful Degradation
 
-Als de frontend met een publieke backend moet praten, zet dan in de frontend-config de juiste backend-URL of voeg die later als build-time configuratie toe.
+Elke v2-module is optioneel. Als een module niet kan laden (ontbrekende dependency, API fout, etc.) wordt deze automatisch overgeslagen. De bot valt dan terug op de v1 equivalenten:
 
-Benodigd om de Pages-versie echt werkend te krijgen:
-- GitHub Actions moet aan staan voor de repository.
-- In GitHub Pages: kies `Deploy from a branch`, branch `gh-pages`, folder `/ (root)`.
-- De workflow bouwt met de juiste base-href voor deze repo, zodat assets laden onder `/ai-trading-simulator/`.
-- De backend moet publiek bereikbaar zijn via HTTPS. De frontend gebruikt standaard `https://ai-trading-simulator.onrender.com`.
-- Op Render moeten minimaal `APP_USERNAME` en `APP_PASSWORD` ingesteld zijn.
-- Voor e-mailalerts zijn extra variabelen nodig: `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `ALERT_FROM_EMAIL`, `ALERT_TO_EMAIL`.
-- Aanbevolen extra backend variabelen: `TOKEN_SECRET` voor stateless auth en `START_BALANCE=2000`.
+| V2 module | Fallback |
+|-----------|----------|
+| MarketScanner | Vaste watchlist uit MarketDataService |
+| EnsembleLightGBM | Standaard SignalPredictor |
+| RecurrentPPO | Standaard PortfolioManager (PPO) |
+| SimulatedBroker | Standaard TradeEngine |
+| RegimeClassifier | Heuristische regime-detectie |
+| SentimentAnalyzer | Wordt overgeslagen |
+| AlternativeData | Wordt overgeslagen |
+| SmartMoneyTracker | Wordt overgeslagen |

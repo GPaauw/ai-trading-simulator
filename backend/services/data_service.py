@@ -373,6 +373,20 @@ class DataService:
             """)
             conn.execute("CREATE TABLE IF NOT EXISTS model_performance (date TEXT PRIMARY KEY, metrics TEXT NOT NULL)")
 
+            # FIXED: issue-3 — v2 kolommen toevoegen aan bestaande trade_history tabel
+            for col_def in [
+                ("regime", "TEXT DEFAULT ''"),
+                ("smart_money_score", "REAL DEFAULT 0"),
+                ("sentiment_score", "REAL DEFAULT 0"),
+                ("ensemble_confidence", "REAL DEFAULT 0"),
+            ]:
+                try:
+                    conn.execute(
+                        f"ALTER TABLE trade_history ADD COLUMN {col_def[0]} {col_def[1]}"
+                    )
+                except Exception:
+                    pass  # kolom bestaat al — veilig te negeren
+
             if not conn.execute("SELECT value FROM settings WHERE key = 'start_balance'").fetchone():
                 conn.execute("INSERT INTO settings(key, value) VALUES ('start_balance', ?)",
                              (str(self._configured_start_balance),))
