@@ -5,6 +5,7 @@ Gebruikt LightGBM voor signaalvoorspelling en PPO RL voor portfolio management.
 """
 
 from typing import Any, Dict, List
+import asyncio
 import logging
 import os
 from datetime import datetime
@@ -48,9 +49,18 @@ auto_trader: Any = None
 
 
 @app.on_event("startup")
-def startup_event() -> None:
+async def startup_event() -> None:
+    # Start alle zware initialisatie in de achtergrond zodat de server
+    # direct op poort 8000 bindt (voorkomt Render port-scan timeout).
+    asyncio.create_task(_startup_background())
+
+
+def _startup_sync() -> None:
+    """Alle zware initialisatie — draait in een thread-pool executor."""
     global data_service, feature_engine, market_data_service
     global signal_predictor, portfolio_manager, auto_trader
+
+    _log = logging.getLogger(__name__)
 
     data_service = DataService()
     feature_engine = FeatureEngine()
@@ -59,8 +69,6 @@ def startup_event() -> None:
     portfolio_manager = PortfolioManager()
 
     # ── V2 modules laden (graceful degradation) ─────────────────────
-    _log = logging.getLogger(__name__)
-
     regime_classifier = None
     try:
         from ml.regime_classifier import RegimeClassifier
@@ -112,7 +120,6 @@ def startup_event() -> None:
     recurrent_ppo = None
     try:
         from ml.recurrent_ppo import RecurrentPPOAgent
-        from ml.config import NUM_FEATURES_V2
         n_actions = 10  # max 10 assets in universum
         obs_dim = 16 + n_actions * 3  # base features + per-asset signals
         recurrent_ppo = RecurrentPPOAgent(obs_dim=obs_dim, n_actions=n_actions)
@@ -159,6 +166,13 @@ def startup_event() -> None:
         _log.info("AutoTrader v2 gestart (interval=%dm, dry_run=%s).", interval, dry_run)
     except Exception as exc:
         _log.warning("AutoTrader v2 start mislukt: %s", exc)
+
+    _log.info("Achtergrond initialisatie voltooid.")
+
+
+async def _startup_background() -> None:
+    """Wrapper die _startup_sync in een thread-pool draait."""
+    await asyncio.to_thread(_startup_sync)
 
 
 # ════════════════════════════════════════════════════════════════════
