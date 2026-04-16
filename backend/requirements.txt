@@ -22,10 +22,15 @@ shap>=0.43.0
 imbalanced-learn>=0.12.0
 
 # ── RL / Portfolio management ───────────────────────────
-gymnasium>=0.29.0
-stable-baselines3>=2.2.0
-sb3-contrib>=2.2.0
+# torch/stable-baselines3/sb3-contrib/gymnasium zijn te zwaar voor Render
+# (torch alleen al ~300-500 MB RAM). De code degradeert graceful naar
+# LightGBM + regelgebaseerde fallbacks als deze pakketten ontbreken.
+# Installeer lokaal of in een GPU-omgeving voor training.
+# gymnasium>=0.29.0
+# stable-baselines3>=2.2.0
+# sb3-contrib>=2.2.0
 
 # ── NLP / Sentiment ────────────────────────────────────
-transformers>=4.36.0
-torch>=2.1.0
+# FinBERT via transformers + torch vergt ~800 MB RAM, niet geschikt voor Render.
+# transformers>=4.36.0
+# torch>=2.1.0
