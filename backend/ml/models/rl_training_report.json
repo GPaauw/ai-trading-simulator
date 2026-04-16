@@ -1,6 +1,6 @@
 {
-  "trained_at": "2026-04-13T13:10:25.468320",
+  "trained_at": "2026-04-16T10:38:39.756972",
   "total_timesteps": 500000,
-  "avg_eval_reward": 36.27,
+  "avg_eval_reward": 25.08,
   "eval_episodes": 10
 }
