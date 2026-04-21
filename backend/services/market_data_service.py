@@ -9,6 +9,7 @@ from typing import Dict, List
 from urllib.request import Request, urlopen
 
 import yfinance as yf
+import pandas as pd
 
 logger = logging.getLogger(__name__)
 
@@ -325,26 +326,46 @@ class MarketDataService:
             self._set_cache(key, snapshot, ttl_seconds=60)
             return snapshot
 
-    def get_history(self, instrument: Dict[str, str], points: int = 120) -> List[float]:
-        if instrument["market"] == "crypto":
-            key = f"history:{instrument['provider_symbol']}:{points}"
+    def get_history(self, instrument: Dict[str, str], points: int = 120) -> pd.DataFrame:
+        """Returneer een OHLCV DataFrame met de laatste `points` sluitprijzen.
+
+        Als alleen close-prijzen beschikbaar zijn, construeren we een eenvoudige
+        OHLCV DataFrame (open = vorige close, high = low = close, volume = 0).
+        """
+
+        def _closes_to_df(closes: List[float]) -> pd.DataFrame:
+            if not closes:
+                return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
+            closes = list(closes)[-points:]
+            df = pd.DataFrame({"close": closes})
+            df["open"] = df["close"].shift(1).fillna(df["close"])
+            df["high"] = df["close"]
+            df["low"] = df["close"]
+            df["volume"] = 0.0
+            return df[["open", "high", "low", "close", "volume"]]
+
+        # Crypto
+        if instrument.get("market") == "crypto":
+            provider = instrument.get("provider_symbol", instrument.get("symbol"))
+            key = f"history:{provider}:{points}"
             cached = self._get_cache(key)
             if cached:
-                return cached  # type: ignore[return-value]
-            closes = self._fetch_crypto_history(instrument["provider_symbol"], points)
+                return _closes_to_df(cached)
+
+            closes = self._fetch_crypto_history(provider, points)
             self._set_cache(key, closes, ttl_seconds=3 * 60)
-            return closes
-        else:
-            key = f"history:yf:{instrument['symbol']}"
-            cached = self._get_cache(key)
-            if cached:
-                closes = cached  # type: ignore[assignment]
-                return closes[-points:]
-            # Individuele fallback
-            yf_symbol = instrument.get("yf_symbol", instrument["symbol"])
-            closes = self._fetch_stock_history_individual(yf_symbol, points)
-            self._set_cache(key, closes, ttl_seconds=3 * 60)
-            return closes
+            return _closes_to_df(closes)
+
+        # Stocks / overige markten
+        key = f"history:yf:{instrument.get('symbol')}"
+        cached = self._get_cache(key)
+        if cached:
+            return _closes_to_df(cached)
+
+        yf_symbol = instrument.get("yf_symbol", instrument.get("symbol"))
+        closes = self._fetch_stock_history_individual(yf_symbol, points)
+        self._set_cache(key, closes, ttl_seconds=3 * 60)
+        return _closes_to_df(closes)
 
     def invalidate_cache(self) -> None:
         """Verwijder snapshot-cache en markeer stock data als verlopen."""

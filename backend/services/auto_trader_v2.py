@@ -367,10 +367,29 @@ class AutoTraderV2:
                 instrument = self._market.get_instrument(symbol)
                 hist = self._market.get_history(instrument)
                 if hist is not None and len(hist) >= 50:
+                    # Als market service al een OHLCV DataFrame teruggeeft
                     if isinstance(hist, pd.DataFrame):
-                        histories[symbol] = hist
+                        df = hist
+                        # normalizeer kolomnamen naar lowercase
+                        df.columns = [c.lower() for c in df.columns]
+                        # sommige bronnen leveren een enkele serie met closes
+                        if "close" not in df.columns and df.shape[1] == 1:
+                            df = df.rename(columns={df.columns[0]: "close"})
+
+                    # Als we alleen een lijst met closes hebben, bouw een eenvoudige
+                    # OHLCV DataFrame zodat FeatureEngine de verwachte kolommen vindt.
                     elif isinstance(hist, list) and hist:
-                        histories[symbol] = pd.DataFrame(hist)
+                        df = pd.DataFrame({"close": hist})
+                        # vul open met vorige close (of current voor eerste rij)
+                        df["open"] = df["close"].shift(1).fillna(df["close"])
+                        df["high"] = df["close"]
+                        df["low"] = df["close"]
+                        df["volume"] = 0.0
+                        df = df[["open", "high", "low", "close", "volume"]]
+                    else:
+                        continue
+
+                    histories[symbol] = df
             except Exception:
                 continue
 
